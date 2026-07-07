@@ -1,0 +1,442 @@
+import 'dart:async';
+import 'dart:io' show Platform;
+
+import 'package:flutter/material.dart';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'package:permission_handler/permission_handler.dart';
+
+import 'ble_service.dart';
+import 'protocol.dart';
+
+void main() => runApp(const FuellstandApp());
+
+class FuellstandApp extends StatelessWidget {
+  const FuellstandApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'Füllstandsensor',
+      theme: ThemeData(
+        colorSchemeSeed: const Color(0xFF0066CC),
+        useMaterial3: true,
+      ),
+      home: const HomePage(),
+    );
+  }
+}
+
+class HomePage extends StatefulWidget {
+  const HomePage({super.key});
+
+  @override
+  State<HomePage> createState() => _HomePageState();
+}
+
+class _HomePageState extends State<HomePage> {
+  final ProteusBle _ble = ProteusBle();
+
+  List<ScanResult> _scanResults = [];
+  bool _isScanning = false;
+  bool _connected = false;
+  SensorStatus? _status;
+  final List<String> _log = [];
+
+  // Editierbare Konfiguration
+  int _fluidSel = 1;
+  final TextEditingController _capCtrl = TextEditingController();
+  final TextEditingController _instCtrl = TextEditingController();
+  bool _configInit = false;
+
+  // Tankform (11 Stützstellen)
+  final List<TextEditingController> _linCtrls =
+      List.generate(11, (_) => TextEditingController());
+
+  final List<StreamSubscription> _subs = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _subs.add(_ble.lines.listen(_onLine));
+    _subs.add(_ble.connected.listen((c) => setState(() => _connected = c)));
+    _subs.add(FlutterBluePlus.scanResults
+        .listen((r) => setState(() => _scanResults = r)));
+    _subs.add(FlutterBluePlus.isScanning
+        .listen((s) => setState(() => _isScanning = s)));
+    _requestPermissions();
+  }
+
+  Future<void> _requestPermissions() async {
+    if (Platform.isAndroid) {
+      await [
+        Permission.bluetoothScan,
+        Permission.bluetoothConnect,
+        Permission.locationWhenInUse,
+      ].request();
+    }
+  }
+
+  void _onLine(String line) {
+    final st = SensorStatus.parse(line);
+    if (st != null) {
+      setState(() {
+        _status = st;
+        if (!_configInit) {
+          _fluidSel = fluidNames.containsKey(st.fluidType) ? st.fluidType! : 1;
+          _capCtrl.text = (st.capacity ?? 0).toString();
+          _instCtrl.text = (st.instance ?? 0).toString();
+          _configInit = true;
+        }
+      });
+      return;
+    }
+    final lin = parseLin(line);
+    if (lin != null) {
+      setState(() {
+        for (var i = 0; i < 11; i++) {
+          _linCtrls[i].text = lin[i].toString();
+        }
+      });
+      _addLog('Kennlinie gelesen');
+      return;
+    }
+    _addLog(line);
+  }
+
+  void _addLog(String msg) {
+    setState(() {
+      _log.insert(0, msg);
+      if (_log.length > 40) _log.removeLast();
+    });
+  }
+
+  Future<void> _startScan() async {
+    await _requestPermissions();
+    _scanResults = [];
+    try {
+      await FlutterBluePlus.startScan(timeout: const Duration(seconds: 8));
+    } catch (e) {
+      _addLog('Scan-Fehler: $e');
+    }
+  }
+
+  Future<void> _connect(BluetoothDevice device) async {
+    await FlutterBluePlus.stopScan();
+    try {
+      await _ble.connect(device);
+      _configInit = false;
+      _addLog('Verbunden mit ${device.platformName}');
+    } catch (e) {
+      _addLog('Verbindung fehlgeschlagen: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Verbindung fehlgeschlagen: $e')));
+      }
+    }
+  }
+
+  Future<void> _send(String cmd) async {
+    _addLog('> $cmd');
+    await _ble.send(cmd);
+  }
+
+  @override
+  void dispose() {
+    for (final s in _subs) {
+      s.cancel();
+    }
+    _ble.dispose();
+    _capCtrl.dispose();
+    _instCtrl.dispose();
+    for (final c in _linCtrls) {
+      c.dispose();
+    }
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Füllstandsensor'),
+        actions: [
+          if (_connected)
+            IconButton(
+              icon: const Icon(Icons.bluetooth_disabled),
+              tooltip: 'Trennen',
+              onPressed: () => _ble.disconnect(),
+            ),
+        ],
+      ),
+      body: _connected ? _buildDashboard() : _buildScanView(),
+    );
+  }
+
+  // ---------------- Scan-Ansicht ----------------
+
+  Widget _buildScanView() {
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.all(12),
+          child: FilledButton.icon(
+            icon: Icon(_isScanning ? Icons.hourglass_top : Icons.search),
+            label: Text(_isScanning ? 'Suche läuft…' : 'Nach Sensor suchen'),
+            onPressed: _isScanning ? null : _startScan,
+          ),
+        ),
+        const Divider(height: 1),
+        Expanded(
+          child: ListView(
+            children: _scanResults
+                .where((r) => r.device.platformName.isNotEmpty)
+                .map((r) => ListTile(
+                      leading: const Icon(Icons.bluetooth),
+                      title: Text(r.device.platformName),
+                      subtitle: Text(r.device.remoteId.str),
+                      trailing: Text('${r.rssi} dBm'),
+                      onTap: () => _connect(r.device),
+                    ))
+                .toList(),
+          ),
+        ),
+      ],
+    );
+  }
+
+  // ---------------- Dashboard ----------------
+
+  Widget _buildDashboard() {
+    return ListView(
+      padding: const EdgeInsets.all(12),
+      children: [
+        _levelCard(),
+        const SizedBox(height: 12),
+        _configCard(),
+        const SizedBox(height: 12),
+        _calibCard(),
+        const SizedBox(height: 12),
+        _tankFormCard(),
+        const SizedBox(height: 12),
+        _logCard(),
+      ],
+    );
+  }
+
+  Widget _levelCard() {
+    final s = _status;
+    final level = s?.level ?? 0;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            Text(
+              s?.level != null ? '${level.toStringAsFixed(1)} %' : '– %',
+              style: const TextStyle(fontSize: 44, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 8),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: LinearProgressIndicator(
+                value: (level / 100).clamp(0.0, 1.0),
+                minHeight: 18,
+              ),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              'Temperatur: ${s?.temp != null ? '${s!.temp!.toStringAsFixed(2)} °C' : '–'}'
+              '   •   Fluid: ${fluidNames[s?.fluidType] ?? '–'}'
+              '   •   ${s?.capacity ?? '–'} L',
+              style: const TextStyle(color: Colors.black54),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _configCard() {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Konfiguration',
+                style: TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                const Text('Fluidtyp: '),
+                const SizedBox(width: 8),
+                DropdownButton<int>(
+                  value: _fluidSel,
+                  items: fluidNames.entries
+                      .map((e) => DropdownMenuItem(
+                          value: e.key, child: Text('${e.key}: ${e.value}')))
+                      .toList(),
+                  onChanged: (v) => setState(() => _fluidSel = v ?? 1),
+                ),
+                const Spacer(),
+                TextButton(
+                  onPressed: () => _send('FLUID $_fluidSel'),
+                  child: const Text('Senden'),
+                ),
+              ],
+            ),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _capCtrl,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(labelText: 'Kapazität (L)'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                TextButton(
+                  onPressed: () => _send('CAP ${_capCtrl.text.trim()}'),
+                  child: const Text('Senden'),
+                ),
+              ],
+            ),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _instCtrl,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(labelText: 'Instanz (0..15)'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                TextButton(
+                  onPressed: () => _send('INST ${_instCtrl.text.trim()}'),
+                  child: const Text('Senden'),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _calibCard() {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Kalibrierung',
+                style: TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 4),
+            const Text(
+              'Tank vollständig füllen, dann »Als 100 % setzen«.',
+              style: TextStyle(color: Colors.black54, fontSize: 13),
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                FilledButton(
+                  onPressed: () => _send('CAL100'),
+                  child: const Text('Als 100 % setzen'),
+                ),
+                const SizedBox(width: 8),
+                OutlinedButton(
+                  onPressed: () => _send('CALRESET'),
+                  child: const Text('Zurücksetzen'),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _tankFormCard() {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Text('Tankform (Volumen-% je Füllhöhe)',
+                    style: TextStyle(fontWeight: FontWeight.bold)),
+                const Spacer(),
+                TextButton(
+                    onPressed: () => _send('LIN'), child: const Text('Lesen')),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: List.generate(11, (i) {
+                return SizedBox(
+                  width: 58,
+                  child: TextField(
+                    controller: _linCtrls[i],
+                    keyboardType: TextInputType.number,
+                    textAlign: TextAlign.center,
+                    decoration: InputDecoration(
+                      labelText: '${i * 10}%',
+                      isDense: true,
+                      contentPadding:
+                          const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
+                    ),
+                  ),
+                );
+              }),
+            ),
+            const SizedBox(height: 8),
+            Align(
+              alignment: Alignment.centerRight,
+              child: FilledButton(
+                onPressed: _sendLinTable,
+                child: const Text('Kennlinie senden'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _sendLinTable() {
+    try {
+      final pts = _linCtrls.map((c) {
+        final v = int.tryParse(c.text.trim());
+        if (v == null) throw ArgumentError('Alle 11 Felder ausfüllen');
+        return v;
+      }).toList();
+      _send(buildLinCommand(pts));
+    } catch (e) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('Ungültige Kennlinie: $e')));
+    }
+  }
+
+  Widget _logCard() {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Log', style: TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 4),
+            ..._log.take(8).map((m) => Text(m,
+                style: const TextStyle(
+                    fontFamily: 'monospace', fontSize: 12, color: Colors.black87))),
+          ],
+        ),
+      ),
+    );
+  }
+}
