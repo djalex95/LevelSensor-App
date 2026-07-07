@@ -243,8 +243,14 @@ class _HomePageState extends State<HomePage> {
 
   /// true, wenn Version [a] neuer ist als [b] (semantischer Vergleich x.y.z).
   bool _isNewer(String a, String b) {
-    final pa = a.split('.').map((s) => int.tryParse(s) ?? 0).toList();
-    final pb = b.split('.').map((s) => int.tryParse(s) ?? 0).toList();
+    // Führende Ziffern je Segment nehmen -> toleriert Suffixe wie "3-dev".
+    int seg(String s) {
+      final m = RegExp(r'^\d+').firstMatch(s.trim());
+      return m != null ? int.parse(m.group(0)!) : 0;
+    }
+
+    final pa = a.split('.').map(seg).toList();
+    final pb = b.split('.').map(seg).toList();
     for (var i = 0; i < 3; i++) {
       final x = i < pa.length ? pa[i] : 0;
       final y = i < pb.length ? pb[i] : 0;

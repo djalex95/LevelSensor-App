@@ -22,7 +22,7 @@ jobs:
       - name: Version ermitteln
         id: ver
         run: |
-          v=$(grep -oP '^version:\s*\K[0-9]+\.[0-9]+\.[0-9]+' pubspec.yaml | head -n1)
+          v=$(grep -oP '^version:\s*\K[^+\s]+' pubspec.yaml | head -n1)
           echo "app=$v" >> "$GITHUB_OUTPUT"
           echo "App-Version: $v"
 

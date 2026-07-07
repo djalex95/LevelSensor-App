@@ -23,14 +23,19 @@ class SensorStatus {
     this.hwRev,
   });
 
-  /// Parst `STAT;L=73.5;T=23.45;F=1;C=150;I=0;CAL=1`. Gibt null bei anderer Zeile.
-  /// Robust gegen führende Störzeichen und abweichende Trennzeichen: es werden
-  /// einfach alle `Schlüssel=Wert`-Paare aus der Zeile extrahiert.
+  /// Parst `STAT;L=73.5;T=23.45;F=1;C=150;I=0;CAL=1;V=1.2.3-dev;HW=1000`.
+  /// Zerlegt die Zeile ab `STAT` an `;` in `Schlüssel=Wert`-Paare, sodass auch
+  /// nicht-numerische Werte (z. B. `V=1.2.3-dev`) vollständig erhalten bleiben.
   static SensorStatus? parse(String line) {
-    if (!line.contains('STAT')) return null;
+    final start = line.indexOf('STAT');
+    if (start < 0) return null;
     final map = <String, String>{};
-    for (final m in RegExp(r'([A-Za-z]+)=(-?[0-9.]+)').allMatches(line)) {
-      map[m.group(1)!.toUpperCase()] = m.group(2)!;
+    for (final part in line.substring(start).split(';')) {
+      final eq = part.indexOf('=');
+      if (eq > 0) {
+        map[part.substring(0, eq).trim().toUpperCase()] =
+            part.substring(eq + 1).trim();
+      }
     }
     if (!map.containsKey('L')) return null;
     return SensorStatus(
