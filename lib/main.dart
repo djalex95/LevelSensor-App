@@ -731,6 +731,7 @@ class _HomePageState extends State<HomePage> {
   Widget _moduleBody() {
     final cs = Theme.of(context).colorScheme;
     final fw = _status?.version;
+    final hw = _status?.hwRev;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -739,6 +740,15 @@ class _HomePageState extends State<HomePage> {
             Icon(Icons.memory, size: 18, color: cs.primary),
             const SizedBox(width: 6),
             Text('Firmware-Version: ${fw ?? '–'}',
+                style: const TextStyle(fontWeight: FontWeight.w600)),
+          ],
+        ),
+        const SizedBox(height: 4),
+        Row(
+          children: [
+            Icon(Icons.developer_board, size: 18, color: cs.primary),
+            const SizedBox(width: 6),
+            Text('HW-Revision: ${hw ?? '–'}',
                 style: const TextStyle(fontWeight: FontWeight.w600)),
           ],
         ),
@@ -939,6 +949,7 @@ class _HomePageState extends State<HomePage> {
 
     final status = ValueNotifier<String>('Start …');
     final progress = ValueNotifier<double>(0);
+    final blVersion = ValueNotifier<String?>(null);
 
     showDialog(
       context: context,
@@ -958,6 +969,17 @@ class _HomePageState extends State<HomePage> {
                   valueListenable: progress,
                   builder: (_, v, __) =>
                       LinearProgressIndicator(value: v > 0 ? v : null)),
+              ValueListenableBuilder<String?>(
+                valueListenable: blVersion,
+                builder: (_, v, __) => v == null
+                    ? const SizedBox.shrink()
+                    : Padding(
+                        padding: const EdgeInsets.only(top: 12),
+                        child: Text('Bootloader v$v',
+                            style: const TextStyle(
+                                color: Colors.grey, fontSize: 12)),
+                      ),
+              ),
             ],
           ),
         ),
@@ -975,6 +997,7 @@ class _HomePageState extends State<HomePage> {
           status.value = s;
           progress.value = p;
         },
+        onBootloaderVersion: (v) => blVersion.value = v,
       ).run();
     } catch (e) {
       error = '$e';
@@ -1002,6 +1025,7 @@ class _HomePageState extends State<HomePage> {
     }
     status.dispose();
     progress.dispose();
+    blVersion.dispose();
   }
 
   Widget _logBody() {

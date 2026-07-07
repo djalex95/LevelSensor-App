@@ -37,6 +37,9 @@ class DfuTransfer {
   final Uint8List firmware;
   final void Function(String status, double progress) onProgress;
 
+  /// Wird mit der Bootloader-Version aufgerufen, sobald sie bekannt ist.
+  final void Function(String blVersion)? onBootloaderVersion;
+
   /// Nutzdaten je DFUD-Paket (passt inkl. Header in einen BLE-Write).
   static const int chunk = 192;
 
@@ -45,6 +48,7 @@ class DfuTransfer {
     required this.device,
     required this.firmware,
     required this.onProgress,
+    this.onBootloaderVersion,
   });
 
   Future<void> run() async {
@@ -70,6 +74,16 @@ class DfuTransfer {
       onProgress('Neu verbinden…', 0);
       await _reconnect();
     }
+
+    // 2b) Bootloader-Version abfragen (informativ; alte Bootloader ohne
+    //     VER-Kommando antworten nicht – dann einfach überspringen).
+    try {
+      await ble.send('VER');
+      final v = await _awaitLine(
+          (l) => l.startsWith('BLV'), const Duration(seconds: 3));
+      final parts = v.split(';');
+      if (parts.length > 1) onBootloaderVersion?.call(parts[1].trim());
+    } catch (_) {/* kein VER-fähiger Bootloader – ignorieren */}
 
     // 3) Transfer starten.
     onProgress('Übertragung startet…', 0);
