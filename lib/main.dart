@@ -74,6 +74,11 @@ class _HomePageState extends State<HomePage> {
   bool _fwLoading = false;
   String? _fwError;
 
+  // Automatische Update-Prüfung nach dem Verbinden.
+  bool _updateChecked = false; // pro Verbindung nur einmal prüfen
+  bool _updateAvailable = false;
+  String? _latestVersion;
+
   int _fluidSel = 1;
   final TextEditingController _capCtrl = TextEditingController();
   final TextEditingController _instCtrl = TextEditingController();
@@ -92,7 +97,12 @@ class _HomePageState extends State<HomePage> {
     _subs.add(_ble.lines.listen(_onLine));
     _subs.add(_ble.connected.listen((c) => setState(() {
           _connected = c;
-          if (!c) _showSettings = false; // bei Trennung zurück zur Startseite
+          if (!c) {
+            _showSettings = false; // bei Trennung zurück zur Startseite
+            _updateChecked = false;
+            _updateAvailable = false;
+            _latestVersion = null;
+          }
         })));
     _subs.add(FlutterBluePlus.scanResults
         .listen((r) => setState(() => _scanResults = r)));
@@ -152,6 +162,11 @@ class _HomePageState extends State<HomePage> {
           _configInit = true;
         }
       });
+      // Einmalig pro Verbindung auf ein Firmware-Update prüfen.
+      if (!_updateChecked && st.version != null) {
+        _updateChecked = true;
+        _checkForUpdate(st.version!);
+      }
       return;
     }
     final lin = parseLin(line);
@@ -160,6 +175,34 @@ class _HomePageState extends State<HomePage> {
       return;
     }
     _addLog(line);
+  }
+
+  /// Kurz auf GitHub prüfen, ob eine neuere Firmware verfügbar ist als die auf
+  /// dem Sensor. Bei Erfolg wird die Liste gleich mitgeladen (spart das ↻).
+  Future<void> _checkForUpdate(String current) async {
+    try {
+      final assets = await _fwRepo.fetchBinAssets();
+      if (assets.isEmpty || !mounted) return;
+      final latest = assets.first.version; // neueste zuerst
+      setState(() {
+        _fwAssets = assets;
+        _fwSel ??= assets.first;
+        _latestVersion = latest;
+        _updateAvailable = _isNewer(latest, current);
+      });
+    } catch (_) {/* offline o. ä. – still ignorieren */}
+  }
+
+  /// true, wenn Version [a] neuer ist als [b] (semantischer Vergleich x.y.z).
+  bool _isNewer(String a, String b) {
+    final pa = a.split('.').map((s) => int.tryParse(s) ?? 0).toList();
+    final pb = b.split('.').map((s) => int.tryParse(s) ?? 0).toList();
+    for (var i = 0; i < 3; i++) {
+      final x = i < pa.length ? pa[i] : 0;
+      final y = i < pb.length ? pb[i] : 0;
+      if (x != y) return x > y;
+    }
+    return false;
   }
 
   void _addLog(String msg) {
@@ -311,8 +354,13 @@ class _HomePageState extends State<HomePage> {
         title: Text(_connected ? _deviceName : 'Füllstandsensor'),
         actions: [
           IconButton(
-            icon: const Icon(Icons.settings),
-            tooltip: 'Einstellungen',
+            icon: Badge(
+              isLabelVisible: _updateAvailable,
+              child: const Icon(Icons.settings),
+            ),
+            tooltip: _updateAvailable
+                ? 'Einstellungen – Firmware-Update verfügbar'
+                : 'Einstellungen',
             onPressed:
                 _connected ? () => setState(() => _showSettings = true) : null,
           ),
@@ -752,6 +800,30 @@ class _HomePageState extends State<HomePage> {
                 style: const TextStyle(fontWeight: FontWeight.w600)),
           ],
         ),
+        if (_updateAvailable) ...[
+          const SizedBox(height: 8),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            decoration: BoxDecoration(
+              color: cs.primaryContainer,
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Row(
+              children: [
+                Icon(Icons.system_update, size: 18, color: cs.onPrimaryContainer),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Update verfügbar: V${_latestVersion ?? ''} '
+                    '– unten „Aus GitHub-Releases".',
+                    style: TextStyle(
+                        color: cs.onPrimaryContainer, fontSize: 13),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
         const Divider(height: 24),
         const Text(
           'Der Name wird dauerhaft im Modul gespeichert. Nach dem Ändern startet '
