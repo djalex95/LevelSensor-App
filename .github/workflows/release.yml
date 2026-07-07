@@ -1,8 +1,15 @@
-name: Build & Release APK
+name: Build & Release APK + AAB
 
-# Release wird durch einen Versions-Tag ausgelöst (z. B. v1.3.2).
+# Release wird durch einen Versions-Tag ausgelöst (z. B. v1.3.4).
 # Push auf main baut KEIN Release mehr.
 # Tag muss zur version: in pubspec.yaml passen.
+#
+# Für das release-signierte AAB (Play Store) müssen diese Repo-Secrets gesetzt sein:
+#   KEYSTORE_BASE64    - der Upload-Keystore (.jks) als base64
+#   KEYSTORE_PASSWORD  - Keystore-Passwort
+#   KEY_PASSWORD       - Key-Passwort
+#   KEY_ALIAS          - Alias (z. B. upload)
+# Fehlen sie, wird debug-signiert gebaut (APK bleibt nutzbar, AAB nicht Play-tauglich).
 
 on:
   push:
@@ -15,6 +22,8 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -32,21 +41,35 @@ jobs:
           test "${GITHUB_REF_NAME#v}" = "${{ steps.ver.outputs.app }}" \
             || { echo "::error::Tag ${GITHUB_REF_NAME} passt nicht zu version ${{ steps.ver.outputs.app }} in pubspec.yaml"; exit 1; }
 
+      - name: Release-Keystore einrichten
+        if: env.KEYSTORE_BASE64 != ''
+        run: |
+          echo "$KEYSTORE_BASE64" | base64 -d > "$GITHUB_WORKSPACE/upload.jks"
+          cat > android/key.properties <<EOF
+          storePassword=${{ secrets.KEYSTORE_PASSWORD }}
+          keyPassword=${{ secrets.KEY_PASSWORD }}
+          keyAlias=${{ secrets.KEY_ALIAS }}
+          storeFile=$GITHUB_WORKSPACE/upload.jks
+          EOF
+
       - name: Flutter einrichten
         uses: subosito/flutter-action@v2
         with:
           channel: stable
 
-      - name: APK bauen
+      - name: APK + AAB bauen
         run: |
           flutter pub get
           flutter build apk --release
+          flutter build appbundle --release
 
-      - name: APK mit Version benennen
+      - name: Artefakte mit Version benennen
         run: |
           mkdir -p dist
           cp build/app/outputs/flutter-apk/app-release.apk \
              "dist/Fuellstandsensor-v${{ steps.ver.outputs.app }}-release.apk"
+          cp build/app/outputs/bundle/release/app-release.aab \
+             "dist/Fuellstandsensor-v${{ steps.ver.outputs.app }}.aab"
 
       - name: Release veröffentlichen
         uses: softprops/action-gh-release@v2
@@ -55,5 +78,8 @@ jobs:
           name: App v${{ steps.ver.outputs.app }}
           body: |
             Automatisch gebaut aus dem Tag.
-            - App: Fuellstandsensor-v${{ steps.ver.outputs.app }}-release.apk
-          files: dist/*.apk
+            - APK (Sideload): Fuellstandsensor-v${{ steps.ver.outputs.app }}-release.apk
+            - AAB (Play Store): Fuellstandsensor-v${{ steps.ver.outputs.app }}.aab
+          files: |
+            dist/*.apk
+            dist/*.aab
