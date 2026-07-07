@@ -1,11 +1,12 @@
 name: Build & Release APK
 
-# Bei jedem Push auf main die APK bauen und an ein GitHub-Release hängen.
-# Version kommt aus pubspec.yaml (version:).
+# Release wird durch einen Versions-Tag ausgelöst (z. B. v1.3.2).
+# Push auf main baut KEIN Release mehr.
+# Tag muss zur version: in pubspec.yaml passen.
 
 on:
   push:
-    branches: [ main ]
+    tags: [ 'v*' ]
   workflow_dispatch:
 
 permissions:
@@ -18,12 +19,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: App-Version ermitteln
+      - name: Version ermitteln
         id: ver
         run: |
           v=$(grep -oP '^version:\s*\K[0-9]+\.[0-9]+\.[0-9]+' pubspec.yaml | head -n1)
           echo "app=$v" >> "$GITHUB_OUTPUT"
           echo "App-Version: $v"
+
+      - name: Tag == pubspec.yaml prüfen
+        if: github.ref_type == 'tag'
+        run: |
+          test "${GITHUB_REF_NAME#v}" = "${{ steps.ver.outputs.app }}" \
+            || { echo "::error::Tag ${GITHUB_REF_NAME} passt nicht zu version ${{ steps.ver.outputs.app }} in pubspec.yaml"; exit 1; }
 
       - name: Flutter einrichten
         uses: subosito/flutter-action@v2
@@ -47,6 +54,6 @@ jobs:
           tag_name: v${{ steps.ver.outputs.app }}
           name: App v${{ steps.ver.outputs.app }}
           body: |
-            Automatisch gebaut aus main.
+            Automatisch gebaut aus dem Tag.
             - App: Fuellstandsensor-v${{ steps.ver.outputs.app }}-release.apk
           files: dist/*.apk
