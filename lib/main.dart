@@ -6,6 +6,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -79,6 +80,13 @@ class _HomePageState extends State<HomePage> {
   bool _updateAvailable = false;
   String? _latestVersion;
 
+  // Empfangsqualität (RSSI des verbundenen Geräts).
+  int? _rssi;
+  Timer? _rssiTimer;
+
+  // Eigene App-Version (aus pubspec.yaml, zur Laufzeit gelesen).
+  String? _appVersion;
+
   int _fluidSel = 1;
   final TextEditingController _capCtrl = TextEditingController();
   final TextEditingController _instCtrl = TextEditingController();
@@ -95,25 +103,44 @@ class _HomePageState extends State<HomePage> {
   void initState() {
     super.initState();
     _subs.add(_ble.lines.listen(_onLine));
-    _subs.add(_ble.connected.listen((c) => setState(() {
-          _connected = c;
-          if (!c) {
-            _showSettings = false; // bei Trennung zurück zur Startseite
-            _updateChecked = false;
-            _updateAvailable = false;
-            _latestVersion = null;
-          }
-        })));
+    _subs.add(_ble.connected.listen((c) {
+      setState(() {
+        _connected = c;
+        if (!c) {
+          _rssi = null;
+          _showSettings = false; // bei Trennung zurück zur Startseite
+          _updateChecked = false;
+          _updateAvailable = false;
+          _latestVersion = null;
+        }
+      });
+      if (c) {
+        _startRssiPolling();
+      } else {
+        _stopRssiPolling();
+      }
+    }));
     _subs.add(FlutterBluePlus.scanResults
         .listen((r) => setState(() => _scanResults = r)));
     _subs.add(FlutterBluePlus.isScanning
         .listen((s) => setState(() => _isScanning = s)));
+    _loadAppVersion();
     _init();
   }
 
   Future<void> _init() async {
     await _requestPermissions();
     await _tryAutoConnect();
+  }
+
+  Future<void> _loadAppVersion() async {
+    try {
+      final info = await PackageInfo.fromPlatform();
+      if (mounted) {
+        setState(() =>
+            _appVersion = '${info.version} (Build ${info.buildNumber})');
+      }
+    } catch (_) {/* z. B. auf nicht unterstützten Plattformen – ignorieren */}
   }
 
   /// Beim Start versuchen, sich mit dem zuletzt verbundenen Sensor zu verbinden.
@@ -191,6 +218,27 @@ class _HomePageState extends State<HomePage> {
         _updateAvailable = _isNewer(latest, current);
       });
     } catch (_) {/* offline o. ä. – still ignorieren */}
+  }
+
+  void _startRssiPolling() {
+    _rssiTimer?.cancel();
+    _readRssi(); // sofort einmal messen
+    _rssiTimer =
+        Timer.periodic(const Duration(seconds: 3), (_) => _readRssi());
+  }
+
+  void _stopRssiPolling() {
+    _rssiTimer?.cancel();
+    _rssiTimer = null;
+  }
+
+  Future<void> _readRssi() async {
+    final d = _device;
+    if (d == null) return;
+    try {
+      final r = await d.readRssi();
+      if (mounted) setState(() => _rssi = r);
+    } catch (_) {/* Verbindung evtl. instabil – ignorieren */}
   }
 
   /// true, wenn Version [a] neuer ist als [b] (semantischer Vergleich x.y.z).
@@ -327,6 +375,7 @@ class _HomePageState extends State<HomePage> {
 
   @override
   void dispose() {
+    _rssiTimer?.cancel();
     for (final s in _subs) {
       s.cancel();
     }
@@ -530,6 +579,14 @@ class _HomePageState extends State<HomePage> {
               title: 'Log',
               child: _logBody(),
             ),
+            const SizedBox(height: 8),
+            Center(
+              child: Text(
+                'App-Version ${_appVersion ?? '–'}',
+                style: TextStyle(
+                    color: Theme.of(context).hintColor, fontSize: 12),
+              ),
+            ),
           ],
         ),
       ),
@@ -540,6 +597,38 @@ class _HomePageState extends State<HomePage> {
     if (v < 20) return const Color(0xFFE53935);
     if (v < 50) return const Color(0xFFFB8C00);
     return const Color(0xFF43A047);
+  }
+
+  /// Kleines Empfangsqualitäts-Symbol (BLE-RSSI des verbundenen Geräts).
+  Widget _signalIndicator() {
+    final rssi = _rssi;
+    IconData icon;
+    Color color;
+    if (rssi == null) {
+      icon = Icons.signal_cellular_0_bar;
+      color = Theme.of(context).hintColor;
+    } else if (rssi >= -67) {
+      icon = Icons.signal_cellular_alt; // stark
+      color = const Color(0xFF43A047);
+    } else if (rssi >= -80) {
+      icon = Icons.signal_cellular_alt_2_bar; // mittel
+      color = const Color(0xFFFB8C00);
+    } else {
+      icon = Icons.signal_cellular_alt_1_bar; // schwach
+      color = const Color(0xFFE53935);
+    }
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(icon, size: 18, color: color),
+        const SizedBox(width: 4),
+        Text(
+          rssi != null ? '$rssi dBm' : '–',
+          style: TextStyle(
+              fontSize: 11, color: Theme.of(context).hintColor),
+        ),
+      ],
+    );
   }
 
   Widget _levelCard() {
@@ -553,6 +642,10 @@ class _HomePageState extends State<HomePage> {
         padding: const EdgeInsets.all(20),
         child: Column(
           children: [
+            Align(
+              alignment: Alignment.centerRight,
+              child: _signalIndicator(),
+            ),
             Text(
               s?.level != null ? '${s!.level!.toStringAsFixed(1)} %' : '– %',
               style: TextStyle(
