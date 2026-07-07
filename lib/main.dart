@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io' show Platform;
+import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
@@ -10,6 +11,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'ble_service.dart';
 import 'dfu.dart';
+import 'github_releases.dart';
 import 'protocol.dart';
 
 void main() => runApp(const FuellstandApp());
@@ -64,6 +66,13 @@ class _HomePageState extends State<HomePage> {
   // Merker für den zuletzt verbundenen Sensor (SharedPreferences).
   static const _prefLastId = 'last_device_id';
   static const _prefLastName = 'last_device_name';
+
+  // Firmware-Releases aus GitHub (öffentliches Repo).
+  static const _fwRepo = GithubReleases('djalex95', 'LevelsensorV1');
+  List<FirmwareAsset> _fwAssets = [];
+  FirmwareAsset? _fwSel;
+  bool _fwLoading = false;
+  String? _fwError;
 
   int _fluidSel = 1;
   final TextEditingController _capCtrl = TextEditingController();
@@ -763,18 +772,129 @@ class _HomePageState extends State<HomePage> {
             style: TextStyle(fontWeight: FontWeight.w600)),
         const SizedBox(height: 4),
         const Text(
-          'Neue Firmware (.bin) auswählen und über Bluetooth übertragen. Der '
-          'Sensor startet dazu neu und ist währenddessen nicht messbereit.',
+          'Firmware über Bluetooth übertragen. Der Sensor startet dazu neu und '
+          'ist währenddessen nicht messbereit.',
           style: TextStyle(color: Colors.grey, fontSize: 13),
         ),
+        const SizedBox(height: 12),
+
+        // --- Aus GitHub ---
+        Row(
+          children: [
+            const Text('Aus GitHub-Releases',
+                style: TextStyle(fontWeight: FontWeight.w600)),
+            const Spacer(),
+            IconButton(
+              tooltip: 'Verfügbare Versionen laden',
+              icon: _fwLoading
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2))
+                  : const Icon(Icons.refresh),
+              onPressed: _fwLoading ? null : _loadGithubFirmware,
+            ),
+          ],
+        ),
+        if (_fwError != null)
+          Text(_fwError!,
+              style: const TextStyle(color: Colors.red, fontSize: 12)),
+        if (_fwAssets.isEmpty && !_fwLoading && _fwError == null)
+          const Text('Noch nicht geladen – auf ↻ tippen.',
+              style: TextStyle(color: Colors.grey, fontSize: 12)),
+        if (_fwAssets.isNotEmpty)
+          DropdownButton<FirmwareAsset>(
+            isExpanded: true,
+            value: _fwSel,
+            hint: const Text('Version wählen'),
+            items: _fwAssets
+                .asMap()
+                .entries
+                .map((e) => DropdownMenuItem(
+                      value: e.value,
+                      child: Text(
+                        e.key == 0
+                            ? '${e.value.label}   ·   neueste'
+                            : e.value.label,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ))
+                .toList(),
+            onChanged: (v) => setState(() => _fwSel = v),
+          ),
+        if (_fwAssets.isNotEmpty) const SizedBox(height: 8),
+        if (_fwAssets.isNotEmpty)
+          FilledButton.icon(
+            icon: const Icon(Icons.cloud_download, size: 18),
+            label: const Text('Gewählte Version aktualisieren'),
+            onPressed: _fwSel == null ? null : () => _updateFromGithub(_fwSel!),
+          ),
+
+        const Divider(height: 24),
+        // --- Lokale Datei ---
+        const Text('Lokale Datei',
+            style: TextStyle(fontWeight: FontWeight.w600)),
         const SizedBox(height: 8),
         FilledButton.tonalIcon(
-          icon: const Icon(Icons.system_update, size: 18),
-          label: const Text('Firmware-Datei wählen & aktualisieren'),
+          icon: const Icon(Icons.folder_open, size: 18),
+          label: const Text('.bin-Datei wählen & aktualisieren'),
           onPressed: _startFirmwareUpdate,
         ),
       ],
     );
+  }
+
+  /// Verfügbare Firmware-Versionen aus den GitHub-Releases laden.
+  Future<void> _loadGithubFirmware() async {
+    setState(() {
+      _fwLoading = true;
+      _fwError = null;
+    });
+    try {
+      final assets = await _fwRepo.fetchBinAssets();
+      setState(() {
+        _fwAssets = assets;
+        _fwSel = assets.isNotEmpty ? assets.first : null;
+        if (assets.isEmpty) _fwError = 'Keine .bin in den Releases gefunden.';
+      });
+    } catch (e) {
+      setState(() {
+        _fwAssets = [];
+        _fwSel = null;
+        _fwError = 'Laden fehlgeschlagen: $e';
+      });
+    } finally {
+      if (mounted) setState(() => _fwLoading = false);
+    }
+  }
+
+  /// Gewählte Firmware herunterladen und das Update starten.
+  Future<void> _updateFromGithub(FirmwareAsset a) async {
+    if (_device == null) return;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const AlertDialog(
+        content: Row(children: [
+          CircularProgressIndicator(),
+          SizedBox(width: 16),
+          Expanded(child: Text('Lade Firmware …')),
+        ]),
+      ),
+    );
+    Uint8List fw;
+    try {
+      fw = await GithubReleases.download(a.url);
+    } catch (e) {
+      if (mounted) Navigator.pop(context);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Download fehlgeschlagen: $e')));
+      }
+      return;
+    }
+    if (mounted) Navigator.pop(context); // Lade-Dialog schließen
+    await _runFirmwareUpdate(fw, a.assetName);
   }
 
   // Bildschirm während des OTA anlassen (Method-Channel zur MainActivity,
@@ -790,8 +910,13 @@ class _HomePageState extends State<HomePage> {
     if (_device == null) return;
     final result = await FilePicker.platform.pickFiles(withData: true);
     if (result == null || result.files.single.bytes == null) return;
-    final fw = result.files.single.bytes!;
-    final name = result.files.single.name;
+    await _runFirmwareUpdate(
+        result.files.single.bytes!, result.files.single.name);
+  }
+
+  /// Gemeinsamer Update-Ablauf für lokale Datei und GitHub-Download.
+  Future<void> _runFirmwareUpdate(Uint8List fw, String name) async {
+    if (_device == null) return;
 
     final confirm = await showDialog<bool>(
       context: context,

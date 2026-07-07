@@ -11,6 +11,8 @@
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"
         android:maxSdkVersion="30" />
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
+    <!-- Für den Firmware-Abruf aus den GitHub-Releases -->
+    <uses-permission android:name="android.permission.INTERNET" />
 
     <application
         android:label="LevelSense"

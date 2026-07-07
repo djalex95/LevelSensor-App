@@ -77,14 +77,46 @@ class DfuTransfer {
     final s = await _awaitLine((l) => l.startsWith('DFUS'), const Duration(seconds: 12));
     if (!s.contains('OK')) throw Exception('Start abgelehnt: $s');
 
-    // 4) Datenblöcke sequentiell, jeweils auf Bestätigung warten.
+    // 4) Datenblöcke sequentiell senden. Robust gegen verlorene Bestätigungen:
+    //    Bleibt das Ack aus, wird dasselbe Paket erneut gesendet. Die Position
+    //    richtet sich immer nach der vom Bootloader gemeldeten Empfangsposition
+    //    (er ist idempotent und antwortet bei bereits geschriebenem Offset mit
+    //    "DFUD ERR seq <pos>", beim Erfolg mit "DFUD <pos> OK").
+    final okRe = RegExp(r'DFUD\s+(\d+)\s+OK');
+    final seqRe = RegExp(r'ERR\s+seq\s+(\d+)');
+    const maxRetries = 8;
     int off = 0;
+    int retries = 0;
     while (off < size) {
       final end = (off + chunk < size) ? off + chunk : size;
       await ble.sendData(buildDfuData(off, firmware.sublist(off, end)));
-      final r = await _awaitLine((l) => l.startsWith('DFUD'), const Duration(seconds: 8));
-      if (r.contains('ERR')) throw Exception('Übertragungsfehler: $r');
-      off = end;
+
+      String r;
+      try {
+        r = await _awaitLine(
+            (l) => l.startsWith('DFUD'), const Duration(seconds: 5));
+      } on TimeoutException {
+        if (++retries > maxRetries) {
+          throw Exception('Zeitüberschreitung bei '
+              '${(off * 100 / size).round()} % (nach $maxRetries Versuchen)');
+        }
+        onProgress(
+            'Aussetzer – wiederhole bei ${(off * 100 / size).round()} % …',
+            off / size);
+        await Future.delayed(const Duration(milliseconds: 150));
+        continue; // dasselbe Paket erneut senden
+      }
+      retries = 0;
+
+      final ok = okRe.firstMatch(r);
+      final seq = seqRe.firstMatch(r);
+      if (ok != null) {
+        off = int.parse(ok.group(1)!); // vom Bootloader bestätigte Position
+      } else if (seq != null) {
+        off = int.parse(seq.group(1)!); // Ack war verloren -> resynchronisieren
+      } else {
+        throw Exception('Übertragungsfehler: $r'); // echter Fehler (z. B. write)
+      }
       onProgress('Übertrage… ${(off * 100 / size).round()} %', off / size);
     }
 
