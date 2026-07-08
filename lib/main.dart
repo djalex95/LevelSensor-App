@@ -158,7 +158,7 @@ class _HomePageState extends State<HomePage> {
       final info = await _appRepo.fetchLatest();
       if (info == null || info.apkUrl.isEmpty || !mounted) return;
       final current = (await PackageInfo.fromPlatform()).version;
-      if (!_isNewer(info.version, current) || !mounted) return;
+      if (!isNewerVersion(info.version, current) || !mounted) return;
 
       final ok = await showDialog<bool>(
         context: context,
@@ -303,7 +303,7 @@ class _HomePageState extends State<HomePage> {
         _fwAssets = assets;
         _fwSel ??= assets.first;
         _latestVersion = latest;
-        _updateAvailable = _isNewer(latest, current);
+        _updateAvailable = isNewerVersion(latest, current);
       });
     } catch (_) {/* offline o. ä. – still ignorieren */}
   }
@@ -335,24 +335,6 @@ class _HomePageState extends State<HomePage> {
       if (a[i] != b[i]) return false;
     }
     return true;
-  }
-
-  /// true, wenn Version [a] neuer ist als [b] (semantischer Vergleich x.y.z).
-  bool _isNewer(String a, String b) {
-    // Führende Ziffern je Segment nehmen -> toleriert Suffixe wie "3-dev".
-    int seg(String s) {
-      final m = RegExp(r'^\d+').firstMatch(s.trim());
-      return m != null ? int.parse(m.group(0)!) : 0;
-    }
-
-    final pa = a.split('.').map(seg).toList();
-    final pb = b.split('.').map(seg).toList();
-    for (var i = 0; i < 3; i++) {
-      final x = i < pa.length ? pa[i] : 0;
-      final y = i < pb.length ? pb[i] : 0;
-      if (x != y) return x > y;
-    }
-    return false;
   }
 
   void _addLog(String msg) {
@@ -1505,7 +1487,8 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _startFirmwareUpdate() async {
     if (_device == null) return;
-    final result = await FilePicker.platform.pickFiles(withData: true);
+    final result = await FilePicker.platform.pickFiles(
+        withData: true, type: FileType.custom, allowedExtensions: const ['bin']);
     if (result == null || result.files.single.bytes == null) return;
     await _runFirmwareUpdate(
         result.files.single.bytes!, result.files.single.name);
@@ -1514,6 +1497,28 @@ class _HomePageState extends State<HomePage> {
   /// Gemeinsamer Update-Ablauf für lokale Datei und GitHub-Download.
   Future<void> _runFirmwareUpdate(Uint8List fw, String name) async {
     if (_device == null) return;
+
+    // Plausibilitätsprüfung: falsche Dateien (z. B. die Bootloader-.bin oder
+    // eine beliebige Fremddatei) gar nicht erst übertragen – der Bootloader
+    // prüft nur die Transfer-CRC, nicht den Inhalt.
+    final imgErr = validateAppImage(fw);
+    if (imgErr != null) {
+      if (mounted) {
+        await showDialog<void>(
+          context: context,
+          builder: (_) => AlertDialog(
+            title: const Text('Ungültige Firmware-Datei'),
+            content: Text('$name\n\n$imgErr'),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('OK')),
+            ],
+          ),
+        );
+      }
+      return;
+    }
 
     final confirm = await showDialog<bool>(
       context: context,
