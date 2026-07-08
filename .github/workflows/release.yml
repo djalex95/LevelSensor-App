@@ -76,10 +76,7 @@ jobs:
         with:
           tag_name: v${{ steps.ver.outputs.app }}
           name: App v${{ steps.ver.outputs.app }}
-          body: |
-            Automatisch gebaut aus dem Tag.
-            - APK (Sideload): Fuellstandsensor-v${{ steps.ver.outputs.app }}-release.apk
-            - AAB (Play Store): Fuellstandsensor-v${{ steps.ver.outputs.app }}.aab
+          body_path: RELEASE_NOTES.md
           files: |
             dist/*.apk
             dist/*.aab
