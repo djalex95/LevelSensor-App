@@ -1,7 +1,32 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
+
+/// Timeouts für die GitHub-Zugriffe: ohne sie hängt der (nicht schließbare)
+/// Ladedialog bei zäher Verbindung beliebig lange.
+const Duration _apiTimeout = Duration(seconds: 15);
+const Duration _downloadTimeout = Duration(seconds: 120);
+
+/// true, wenn Version [a] neuer ist als [b] (semantischer Vergleich x.y.z).
+/// Tolerant gegenüber Suffixen wie "-dev": je Segment zählen die führenden
+/// Ziffern ("1.2.4-dev" == 1.2.4).
+bool isNewerVersion(String a, String b) {
+  int seg(String s) {
+    final m = RegExp(r'^\d+').firstMatch(s.trim());
+    return m != null ? int.parse(m.group(0)!) : 0;
+  }
+
+  final pa = a.split('.').map(seg).toList();
+  final pb = b.split('.').map(seg).toList();
+  for (var i = 0; i < 3; i++) {
+    final x = i < pa.length ? pa[i] : 0;
+    final y = i < pb.length ? pb[i] : 0;
+    if (x != y) return x > y;
+  }
+  return false;
+}
 
 /// Eine herunterladbare Firmware-Datei (.bin) aus einem GitHub-Release.
 class FirmwareAsset {
@@ -38,7 +63,7 @@ class GithubReleases {
         'https://api.github.com/repos/$owner/$repo/releases?per_page=100');
     final resp = await http.get(uri, headers: {
       'Accept': 'application/vnd.github+json',
-    });
+    }).timeout(_apiTimeout);
     if (resp.statusCode != 200) {
       throw Exception('GitHub-API HTTP ${resp.statusCode}');
     }
@@ -74,7 +99,7 @@ class GithubReleases {
 
   /// Lädt eine Datei herunter (folgt Weiterleitungen des CDN).
   static Future<Uint8List> download(String url) async {
-    final resp = await http.get(Uri.parse(url));
+    final resp = await http.get(Uri.parse(url)).timeout(_downloadTimeout);
     if (resp.statusCode != 200) {
       throw Exception('Download HTTP ${resp.statusCode}');
     }
@@ -103,7 +128,7 @@ class GithubAppUpdate {
         Uri.parse('https://api.github.com/repos/$owner/$repo/releases/latest');
     final resp = await http.get(uri, headers: {
       'Accept': 'application/vnd.github+json',
-    });
+    }).timeout(_apiTimeout);
     if (resp.statusCode != 200) return null;
     final rel = jsonDecode(resp.body) as Map<String, dynamic>;
     final tag = (rel['tag_name'] as String?) ??
