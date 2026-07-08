@@ -81,3 +81,46 @@ class GithubReleases {
     return resp.bodyBytes;
   }
 }
+
+/// Info über die neueste App-Version (APK) im GitHub-Release.
+class AppUpdateInfo {
+  final String version; // z. B. "1.3.5"
+  final String apkUrl;
+  final int size;
+  const AppUpdateInfo(
+      {required this.version, required this.apkUrl, required this.size});
+}
+
+/// Fragt das neueste Release des App-Repos ab und liefert dessen APK.
+class GithubAppUpdate {
+  final String owner;
+  final String repo;
+
+  const GithubAppUpdate(this.owner, this.repo);
+
+  Future<AppUpdateInfo?> fetchLatest() async {
+    final uri =
+        Uri.parse('https://api.github.com/repos/$owner/$repo/releases/latest');
+    final resp = await http.get(uri, headers: {
+      'Accept': 'application/vnd.github+json',
+    });
+    if (resp.statusCode != 200) return null;
+    final rel = jsonDecode(resp.body) as Map<String, dynamic>;
+    final tag = (rel['tag_name'] as String?) ??
+        (rel['name'] as String?) ??
+        '';
+    final ver = RegExp(r'\d+\.\d+\.\d+').firstMatch(tag)?.group(0) ?? tag;
+    final assets = (rel['assets'] as List<dynamic>?) ?? const [];
+    for (final a in assets) {
+      final name = (a['name'] as String?) ?? '';
+      if (name.toLowerCase().endsWith('.apk')) {
+        return AppUpdateInfo(
+          version: ver,
+          apkUrl: a['browser_download_url'] as String? ?? '',
+          size: (a['size'] as num?)?.toInt() ?? 0,
+        );
+      }
+    }
+    return null;
+  }
+}

@@ -1,5 +1,5 @@
 import 'dart:async';
-import 'dart:io' show Platform;
+import 'dart:io' show File, Platform;
 import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:package_info_plus/package_info_plus.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -70,6 +71,10 @@ class _HomePageState extends State<HomePage> {
 
   // Firmware-Releases aus GitHub (öffentliches Repo).
   static const _fwRepo = GithubReleases('djalex95', 'LevelsensorV1');
+
+  // App-eigene Updates (APK) aus dem App-Repo.
+  static const _appRepo = GithubAppUpdate('djalex95', 'LevelSensor-App');
+  static const MethodChannel _installerChannel = MethodChannel('app/installer');
   List<FirmwareAsset> _fwAssets = [];
   FirmwareAsset? _fwSel;
   bool _fwLoading = false;
@@ -130,7 +135,67 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _init() async {
     await _requestPermissions();
+    _checkAppUpdate(); // unabhängig von der Sensorverbindung, parallel
     await _tryAutoConnect();
+  }
+
+  /// Beim Start prüfen, ob im App-Repo eine neuere App-Version (APK) liegt,
+  /// und bei Zustimmung herunterladen + Installer öffnen (nur Android/Sideload).
+  Future<void> _checkAppUpdate() async {
+    if (!Platform.isAndroid) return;
+    try {
+      final info = await _appRepo.fetchLatest();
+      if (info == null || info.apkUrl.isEmpty || !mounted) return;
+      final current = (await PackageInfo.fromPlatform()).version;
+      if (!_isNewer(info.version, current) || !mounted) return;
+
+      final ok = await showDialog<bool>(
+        context: context,
+        builder: (_) => AlertDialog(
+          title: const Text('App-Update verfügbar'),
+          content: Text(
+              'Version ${info.version} ist verfügbar (installiert: $current).\n\n'
+              'Jetzt herunterladen und installieren?'),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('Später')),
+            FilledButton(
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text('Aktualisieren')),
+          ],
+        ),
+      );
+      if (ok == true) await _downloadAndInstall(info);
+    } catch (_) {/* offline o. ä. – still ignorieren */}
+  }
+
+  Future<void> _downloadAndInstall(AppUpdateInfo info) async {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const AlertDialog(
+        content: Row(children: [
+          CircularProgressIndicator(),
+          SizedBox(width: 16),
+          Expanded(child: Text('Lade Update …')),
+        ]),
+      ),
+    );
+    try {
+      final bytes = await GithubReleases.download(info.apkUrl);
+      final dir = await getTemporaryDirectory();
+      final file = File('${dir.path}/app-update.apk');
+      await file.writeAsBytes(bytes);
+      if (mounted) Navigator.pop(context); // Ladedialog schließen
+      await _installerChannel.invokeMethod('install', {'path': file.path});
+    } catch (e) {
+      if (mounted) Navigator.pop(context);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Update fehlgeschlagen: $e')));
+      }
+    }
   }
 
   Future<void> _loadAppVersion() async {
