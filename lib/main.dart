@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io' show File, Platform;
 import 'dart:typed_data';
 
@@ -93,6 +94,9 @@ class _HomePageState extends State<HomePage> {
   bool _bootloaderMode = false;
   String? _bootloaderVersion;
 
+  // Zuletzt ausgelesene Tankform-Kennlinie (11 Werte) oder null.
+  List<int>? _linCurve;
+
   // Eigene App-Version (aus pubspec.yaml, zur Laufzeit gelesen).
   String? _appVersion;
 
@@ -123,6 +127,7 @@ class _HomePageState extends State<HomePage> {
           _latestVersion = null;
           _bootloaderMode = false;
           _bootloaderVersion = null;
+          _linCurve = null;
         }
       });
       if (c) {
@@ -280,6 +285,7 @@ class _HomePageState extends State<HomePage> {
     }
     final lin = parseLin(line);
     if (lin != null) {
+      setState(() => _linCurve = lin);
       _addLog('Kennlinie: ${lin.join(",")}');
       return;
     }
@@ -321,6 +327,14 @@ class _HomePageState extends State<HomePage> {
       final r = await d.readRssi();
       if (mounted) setState(() => _rssi = r);
     } catch (_) {/* Verbindung evtl. instabil – ignorieren */}
+  }
+
+  bool _listEq(List<int> a, List<int> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
   }
 
   /// true, wenn Version [a] neuer ist als [b] (semantischer Vergleich x.y.z).
@@ -378,6 +392,7 @@ class _HomePageState extends State<HomePage> {
       // STAT den Bootloader-Modus wieder.
       try {
         await _ble.send('VER');
+        await _ble.send('LIN'); // aktuelle Tankform-Kennlinie abfragen
       } catch (_) {}
     } catch (e) {
       _addLog('Verbindung fehlgeschlagen: $e');
@@ -446,7 +461,7 @@ class _HomePageState extends State<HomePage> {
     return table;
   }
 
-  void _sendTankForm() {
+  Future<void> _sendTankForm() async {
     try {
       final heights = _heightCtrls.map((c) {
         final v = double.tryParse(c.text.trim().replaceAll(',', '.'));
@@ -460,10 +475,160 @@ class _HomePageState extends State<HomePage> {
           throw ArgumentError('Der Füllstand muss von oben nach unten steigen');
         }
       }
-      _send(buildLinCommand(_resampleToHeightGrid(heights)));
+      await _sendLin(_resampleToHeightGrid(heights));
     } catch (e) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('$e')));
+      _snack('$e');
+    }
+  }
+
+  void _snack(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  /// Sendet die Kennlinie und wartet auf die Bestätigung des Sensors
+  /// (`OK LIN` / `ERR LIN`), zeigt das Ergebnis an.
+  Future<void> _sendLin(List<int> pts) async {
+    final cmd = buildLinCommand(pts);
+    final completer = Completer<bool>();
+    final sub = _ble.lines.listen((line) {
+      if (line.contains('OK LIN')) {
+        if (!completer.isCompleted) completer.complete(true);
+      } else if (line.contains('ERR LIN')) {
+        if (!completer.isCompleted) completer.complete(false);
+      }
+    });
+    _addLog('> $cmd');
+    try {
+      await _ble.send(cmd);
+    } catch (e) {
+      await sub.cancel();
+      _snack('Sendefehler: $e');
+      return;
+    }
+    bool? ok;
+    try {
+      ok = await completer.future.timeout(const Duration(seconds: 5));
+    } on TimeoutException {
+      ok = null;
+    }
+    await sub.cancel();
+    if (!mounted) return;
+    if (ok == null) {
+      _snack('Keine Bestätigung erhalten – bitte erneut versuchen.');
+    } else if (ok) {
+      _snack('Kennlinie übernommen ✓');
+      setState(() => _linCurve = pts); // Status sofort aktualisieren
+    } else {
+      _snack('Kennlinie abgelehnt (ungültige Werte).');
+    }
+  }
+
+  void _showCurveGraph(List<int> curve) {
+    final cs = Theme.of(context).colorScheme;
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Korrekturlinie'),
+        content: SizedBox(
+          width: 320,
+          height: 300,
+          child: Column(
+            children: [
+              Expanded(
+                child: CustomPaint(
+                  size: Size.infinite,
+                  painter: _LinChartPainter(curve, cs.primary),
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                'X: Füllhöhe %   ·   Y: Volumen %   ·   grau = linear',
+                style: TextStyle(
+                    fontSize: 11, color: Theme.of(context).hintColor),
+              ),
+              const SizedBox(height: 4),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: [
+                  TextButton.icon(
+                    icon: const Icon(Icons.download, size: 18),
+                    label: const Text('Export'),
+                    onPressed: () => _exportCurveCsv(curve),
+                  ),
+                  TextButton.icon(
+                    icon: const Icon(Icons.upload_file, size: 18),
+                    label: const Text('Import'),
+                    onPressed: () {
+                      Navigator.pop(context);
+                      _importCurveCsv();
+                    },
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Schließen')),
+        ],
+      ),
+    );
+  }
+
+  /// Kennlinie als CSV speichern (Spalten: Füllhöhe %, Volumen %).
+  Future<void> _exportCurveCsv(List<int> curve) async {
+    final sb = StringBuffer('fuellhoehe_prozent,volumen_prozent\n');
+    for (var i = 0; i < curve.length; i++) {
+      sb.writeln('${i * 10},${curve[i]}');
+    }
+    try {
+      final path = await FilePicker.platform.saveFile(
+        dialogTitle: 'Kennlinie speichern',
+        fileName: 'kennlinie.csv',
+        bytes: Uint8List.fromList(utf8.encode(sb.toString())),
+        type: FileType.custom,
+        allowedExtensions: const ['csv'],
+      );
+      if (path != null) _snack('Exportiert: ${path.split('/').last}');
+    } catch (e) {
+      _snack('Export fehlgeschlagen: $e');
+    }
+  }
+
+  /// CSV wählen, die 11 Volumen-Werte lesen und als Kennlinie senden.
+  Future<void> _importCurveCsv() async {
+    try {
+      final res = await FilePicker.platform.pickFiles(
+          withData: true, type: FileType.custom, allowedExtensions: const ['csv']);
+      if (res == null || res.files.single.bytes == null) return;
+      final text = utf8.decode(res.files.single.bytes!);
+      final vals = <int>[];
+      for (final raw in text.split(RegExp(r'[\r\n]+'))) {
+        final line = raw.trim();
+        if (line.isEmpty) continue;
+        final parts = line.split(RegExp(r'[;,\t]'));
+        final v = double.tryParse(parts.last.trim().replaceAll(',', '.'));
+        if (v == null) continue; // Kopfzeile / ungültig überspringen
+        vals.add(v.round());
+      }
+      if (vals.length < 11) {
+        _snack('CSV: 11 Werte nötig (gefunden: ${vals.length}).');
+        return;
+      }
+      final pts = vals.take(11).map((v) => v.clamp(0, 100)).toList();
+      for (var i = 1; i < 11; i++) {
+        if (pts[i] < pts[i - 1]) {
+          _snack('CSV: Werte müssen von 0 auf 100 steigen.');
+          return;
+        }
+      }
+      await _sendLin(pts);
+    } catch (e) {
+      _snack('Import fehlgeschlagen: $e');
     }
   }
 
@@ -677,6 +842,10 @@ class _HomePageState extends State<HomePage> {
             onPressed: () => setState(() => _showSettings = false),
           ),
           title: const Text('Einstellungen'),
+          bottom: PreferredSize(
+            preferredSize: const Size.fromHeight(30),
+            child: _settingsStatusStrip(),
+          ),
         ),
         body: ListView(
           padding: const EdgeInsets.fromLTRB(12, 12, 12, 24),
@@ -720,40 +889,76 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
+  /// Schmale Leiste oben in den Einstellungen: Füllstand (% / L) + Empfang.
+  Widget _settingsStatusStrip() {
+    final cs = Theme.of(context).colorScheme;
+    final s = _status;
+    String txt;
+    if (_bootloaderMode) {
+      txt = 'Bootloader-Modus';
+    } else if (s?.level != null) {
+      final lvl = s!.level!;
+      final liters = s.capacity != null
+          ? ' · ${(lvl * s.capacity! / 100).toStringAsFixed(0)} L'
+          : '';
+      txt = '${lvl.toStringAsFixed(1)} %$liters';
+    } else {
+      txt = '–';
+    }
+    return Container(
+      height: 30,
+      width: double.infinity,
+      color: cs.surfaceContainerHighest,
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: Row(
+        children: [
+          Icon(Icons.water_drop, size: 15, color: cs.primary),
+          const SizedBox(width: 6),
+          Text(txt,
+              style: const TextStyle(
+                  fontSize: 12.5, fontWeight: FontWeight.w600)),
+          const Spacer(),
+          _signalIndicator(showDbm: false),
+        ],
+      ),
+    );
+  }
+
   Color _levelColor(double v) {
     if (v < 20) return const Color(0xFFE53935);
     if (v < 50) return const Color(0xFFFB8C00);
     return const Color(0xFF43A047);
   }
 
-  /// Kleines Empfangsqualitäts-Symbol (BLE-RSSI des verbundenen Geräts).
-  Widget _signalIndicator() {
+  /// RSSI -> Anzahl leuchtender Balken (0..5).
+  int _signalLit(int? rssi) {
+    if (rssi == null) return 0;
+    if (rssi >= -55) return 5;
+    if (rssi >= -65) return 4;
+    if (rssi >= -75) return 3;
+    if (rssi >= -85) return 2;
+    return 1;
+  }
+
+  /// Empfangsqualität als 5-Balken-Symbol (+ optional dBm).
+  Widget _signalIndicator({bool showDbm = true}) {
     final rssi = _rssi;
-    IconData icon;
-    Color color;
-    if (rssi == null) {
-      icon = Icons.signal_cellular_0_bar;
-      color = Theme.of(context).hintColor;
-    } else if (rssi >= -67) {
-      icon = Icons.signal_cellular_alt; // stark
-      color = const Color(0xFF43A047);
-    } else if (rssi >= -80) {
-      icon = Icons.signal_cellular_alt_2_bar; // mittel
-      color = const Color(0xFFFB8C00);
-    } else {
-      icon = Icons.signal_cellular_alt_1_bar; // schwach
-      color = const Color(0xFFE53935);
-    }
+    final lit = _signalLit(rssi);
+    final color = lit >= 4
+        ? const Color(0xFF43A047)
+        : lit >= 2
+            ? const Color(0xFFFB8C00)
+            : const Color(0xFFE53935);
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Icon(icon, size: 18, color: color),
-        const SizedBox(width: 4),
-        Text(
-          rssi != null ? '$rssi dBm' : '–',
-          style: TextStyle(
-              fontSize: 11, color: Theme.of(context).hintColor),
-        ),
+        _SignalBars(lit: lit, color: color),
+        if (showDbm) ...[
+          const SizedBox(width: 6),
+          Text(rssi != null ? '$rssi dBm' : '–',
+              style:
+                  TextStyle(fontSize: 11, color: Theme.of(context).hintColor)),
+        ],
       ],
     );
   }
@@ -763,15 +968,23 @@ class _HomePageState extends State<HomePage> {
     final level = (s?.level ?? 0).clamp(0.0, 100.0);
     final color = _levelColor(level.toDouble());
     final cs = Theme.of(context).colorScheme;
+    final calibrated = s?.calibrated == true;
+    final tankform = _linCurve != null &&
+        !_listEq(_linCurve!, List.generate(11, (i) => i * 10));
     return Card(
       color: cs.surfaceContainerHighest,
       child: Padding(
         padding: const EdgeInsets.all(20),
         child: Column(
           children: [
-            Align(
-              alignment: Alignment.centerRight,
-              child: _signalIndicator(),
+            Row(
+              children: [
+                _miniBadge(Icons.verified, 'Kalibriert', calibrated),
+                const SizedBox(width: 12),
+                _miniBadge(Icons.timeline, 'Tankform', tankform),
+                const Spacer(),
+                _signalIndicator(),
+              ],
             ),
             Text(
               s?.level != null ? '${s!.level!.toStringAsFixed(1)} %' : '– %',
@@ -781,6 +994,15 @@ class _HomePageState extends State<HomePage> {
                 color: color,
               ),
             ),
+            if (s != null && s.level != null && s.capacity != null)
+              Text(
+                '≈ ${(s.level! * s.capacity! / 100).toStringAsFixed(0)} L '
+                'von ${s.capacity} L',
+                style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w500,
+                    color: cs.onSurfaceVariant),
+              ),
             const SizedBox(height: 12),
             ClipRRect(
               borderRadius: BorderRadius.circular(12),
@@ -815,6 +1037,23 @@ class _HomePageState extends State<HomePage> {
         SizedBox(height: 22, child: icon),
         const SizedBox(height: 4),
         Text(text, style: const TextStyle(fontWeight: FontWeight.w500)),
+      ],
+    );
+  }
+
+  /// Kleines Status-Symbol (aktiv = farbig, sonst ausgegraut).
+  Widget _miniBadge(IconData icon, String label, bool active) {
+    final c = active
+        ? Theme.of(context).colorScheme.primary
+        : Theme.of(context).disabledColor;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(icon, size: 16, color: c),
+        const SizedBox(width: 3),
+        Text(label,
+            style:
+                TextStyle(fontSize: 11, color: c, fontWeight: FontWeight.w500)),
       ],
     );
   }
@@ -891,9 +1130,37 @@ class _HomePageState extends State<HomePage> {
   }
 
   Widget _calibBody() {
+    final calibrated = _status?.calibrated == true;
+    final okColor = const Color(0xFF43A047);
+    final hint = Theme.of(context).hintColor;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+          decoration: BoxDecoration(
+            color: (calibrated ? okColor : hint).withValues(alpha: 0.12),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Row(
+            children: [
+              Icon(calibrated ? Icons.check_circle : Icons.info_outline,
+                  size: 18, color: calibrated ? okColor : hint),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  calibrated
+                      ? 'Sensor ist auf 100 % kalibriert.'
+                      : 'Nicht kalibriert – es gilt der Werkswert.',
+                  style: TextStyle(
+                      fontWeight: FontWeight.w600,
+                      color: calibrated ? okColor : hint),
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 12),
         const Text('Tank vollständig füllen, dann »Als 100 % setzen«.',
             style: TextStyle(color: Colors.grey, fontSize: 13)),
         const SizedBox(height: 12),
@@ -916,9 +1183,38 @@ class _HomePageState extends State<HomePage> {
 
   Widget _tankFormBody() {
     final cap = _status?.capacity;
+    final cs = Theme.of(context).colorScheme;
+    final identity = List.generate(11, (i) => i * 10);
+    final curve = _linCurve;
+    final isCustom = curve != null && !_listEq(curve, identity);
+    final statusText = curve == null
+        ? 'unbekannt – auf „Auslesen" tippen'
+        : (isCustom ? 'angepasst (Tankform aktiv)' : 'Standard (linear)');
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        Row(
+          children: [
+            Icon(isCustom ? Icons.tune : Icons.timeline,
+                size: 18, color: cs.primary),
+            const SizedBox(width: 6),
+            Expanded(
+              child: Text('Kennlinie: $statusText',
+                  style: const TextStyle(fontWeight: FontWeight.w600)),
+            ),
+            IconButton(
+              icon: const Icon(Icons.show_chart),
+              tooltip: 'Als Graph anzeigen',
+              onPressed: curve == null ? null : () => _showCurveGraph(curve),
+            ),
+            TextButton(
+                onPressed: () => _send('LIN'), child: const Text('Auslesen')),
+          ],
+        ),
+        if (curve != null)
+          Text('Werte (Vol.-% je 10 % Höhe): ${curve.join(", ")}',
+              style: const TextStyle(color: Colors.grey, fontSize: 12)),
+        const Divider(height: 20),
         Text(
           cap != null
               ? 'Tank leeren, dann Zeile für Zeile die angegebene Menge einfüllen '
@@ -930,8 +1226,7 @@ class _HomePageState extends State<HomePage> {
         OutlinedButton.icon(
           icon: const Icon(Icons.straighten, size: 18),
           label: const Text('Messung vorbereiten'),
-          onPressed: () =>
-              _send(buildLinCommand(List.generate(11, (i) => i * 10))),
+          onPressed: () => _sendLin(List.generate(11, (i) => i * 10)),
         ),
         const SizedBox(height: 4),
         const Text('setzt die Kennlinie auf linear – der Sensor zeigt dann die rohe Höhe',
@@ -960,7 +1255,7 @@ class _HomePageState extends State<HomePage> {
     } else {
       final step = cap / 10;
       final total = cap * i / 10;
-      fill = '+${step.toStringAsFixed(1)} L  (∑ ${total.toStringAsFixed(0)} L)';
+      fill = '+${step.toStringAsFixed(1)} L  (∑ ${total.toStringAsFixed(1)} L)';
     }
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 3),
@@ -1335,6 +1630,112 @@ class _HomePageState extends State<HomePage> {
                         fontFamily: 'monospace', fontSize: 12)),
               ))
           .toList(),
+    );
+  }
+}
+
+/// Zeichnet die Korrekturlinie: X = Füllhöhe %, Y = Volumen %.
+/// Graue Diagonale = linear (ohne Korrektur), farbige Linie = aktuelle Kennlinie.
+class _LinChartPainter extends CustomPainter {
+  final List<int> pts; // 11 Werte (0..100)
+  final Color color;
+  _LinChartPainter(this.pts, this.color);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    const pad = 10.0;
+    final rect = Rect.fromLTRB(pad, pad, size.width - pad, size.height - pad);
+
+    Offset at(double hx, double vy) => Offset(
+          rect.left + rect.width * hx / 100,
+          rect.bottom - rect.height * vy / 100,
+        );
+
+    // Gitter (25 %)
+    final grid = Paint()
+      ..color = const Color(0x22000000)
+      ..strokeWidth = 0.5;
+    for (var g = 0; g <= 4; g++) {
+      final x = rect.left + rect.width * g / 4;
+      final y = rect.bottom - rect.height * g / 4;
+      canvas.drawLine(Offset(x, rect.top), Offset(x, rect.bottom), grid);
+      canvas.drawLine(Offset(rect.left, y), Offset(rect.right, y), grid);
+    }
+    // Rahmen / Achsen
+    final axis = Paint()
+      ..color = const Color(0xFF9E9E9E)
+      ..strokeWidth = 1
+      ..style = PaintingStyle.stroke;
+    canvas.drawRect(rect, axis);
+
+    // Lineare Vergleichslinie (gestrichelt grau)
+    final ref = Paint()
+      ..color = const Color(0xFFBDBDBD)
+      ..strokeWidth = 1;
+    _dash(canvas, at(0, 0), at(100, 100), ref);
+
+    // Kennlinie
+    final line = Paint()
+      ..color = color
+      ..strokeWidth = 2
+      ..style = PaintingStyle.stroke
+      ..strokeJoin = StrokeJoin.round;
+    final path = Path();
+    for (var i = 0; i < pts.length; i++) {
+      final o = at(i * 10.0, pts[i].toDouble());
+      i == 0 ? path.moveTo(o.dx, o.dy) : path.lineTo(o.dx, o.dy);
+    }
+    canvas.drawPath(path, line);
+    final dot = Paint()..color = color;
+    for (var i = 0; i < pts.length; i++) {
+      canvas.drawCircle(at(i * 10.0, pts[i].toDouble()), 2.5, dot);
+    }
+  }
+
+  void _dash(Canvas c, Offset a, Offset b, Paint p,
+      {double dash = 5, double gap = 3}) {
+    final total = (b - a).distance;
+    if (total == 0) return;
+    final dir = (b - a) / total;
+    var d = 0.0;
+    while (d < total) {
+      final e = (d + dash) < total ? d + dash : total;
+      c.drawLine(a + dir * d, a + dir * e, p);
+      d += dash + gap;
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _LinChartPainter old) =>
+      old.pts != pts || old.color != color;
+}
+
+/// Empfangs-Anzeige: 5 Balken, davon [lit] gefüllt (leere sichtbar grau).
+class _SignalBars extends StatelessWidget {
+  final int lit; // 0..5
+  final Color color;
+  final double height;
+  const _SignalBars({required this.lit, required this.color, this.height = 16});
+
+  @override
+  Widget build(BuildContext context) {
+    const empty = Color(0x33888888);
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.end,
+      children: List.generate(5, (i) {
+        return Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 1),
+          child: Container(
+            width: 4,
+            height: height * (0.4 + 0.15 * i),
+            decoration: BoxDecoration(
+              color: i < lit ? color : empty,
+              borderRadius: BorderRadius.circular(1.5),
+            ),
+          ),
+        );
+      }),
     );
   }
 }
