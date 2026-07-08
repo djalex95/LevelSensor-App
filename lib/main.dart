@@ -89,6 +89,10 @@ class _HomePageState extends State<HomePage> {
   int? _rssi;
   Timer? _rssiTimer;
 
+  // Sensor steckt im Bootloader (kein STAT, meldet BLV auf VER).
+  bool _bootloaderMode = false;
+  String? _bootloaderVersion;
+
   // Eigene App-Version (aus pubspec.yaml, zur Laufzeit gelesen).
   String? _appVersion;
 
@@ -117,6 +121,8 @@ class _HomePageState extends State<HomePage> {
           _updateChecked = false;
           _updateAvailable = false;
           _latestVersion = null;
+          _bootloaderMode = false;
+          _bootloaderVersion = null;
         }
       });
       if (c) {
@@ -243,10 +249,21 @@ class _HomePageState extends State<HomePage> {
   }
 
   void _onLine(String line) {
+    // Bootloader meldet sich mit "BLV;x.y.z" (statt STAT) -> Bootloader-Modus.
+    if (line.startsWith('BLV')) {
+      final parts = line.split(';');
+      setState(() {
+        _bootloaderMode = true;
+        _bootloaderVersion = parts.length > 1 ? parts[1].trim() : null;
+      });
+      return;
+    }
+
     final st = SensorStatus.parse(line);
     if (st != null) {
       setState(() {
         _status = st;
+        _bootloaderMode = false; // normale Firmware sendet STAT
         if (!_configInit) {
           _fluidSel = fluidNames.containsKey(st.fluidType) ? st.fluidType! : 1;
           _capCtrl.text = (st.capacity ?? 0).toString();
@@ -356,6 +373,12 @@ class _HomePageState extends State<HomePage> {
       _nameCtrl.text = _deviceName;
       _addLog('Verbunden mit $_deviceName');
       await _saveLastDevice(device, _deviceName); // Sensor merken
+      // Bootloader-Erkennung: normale Firmware antwortet mit STAT/„VER;..",
+      // der Bootloader mit „BLV;..". Im Normalbetrieb überschreibt das erste
+      // STAT den Bootloader-Modus wieder.
+      try {
+        await _ble.send('VER');
+      } catch (_) {}
     } catch (e) {
       _addLog('Verbindung fehlgeschlagen: $e');
       if (mounted) {
@@ -492,9 +515,42 @@ class _HomePageState extends State<HomePage> {
   }
 
   Widget _buildHomeBody() {
+    if (_bootloaderMode) return _bootloaderCard();
     return ListView(
       padding: const EdgeInsets.fromLTRB(12, 12, 12, 24),
       children: [_levelCard()],
+    );
+  }
+
+  Widget _bootloaderCard() {
+    final cs = Theme.of(context).colorScheme;
+    final hint = Theme.of(context).hintColor;
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.system_update_alt, size: 48, color: cs.primary),
+            const SizedBox(height: 12),
+            Text('Sensor im Bootloader-Modus',
+                style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 6),
+            Text('Bootloader-Version: ${_bootloaderVersion ?? '–'}',
+                style: TextStyle(color: hint)),
+            const SizedBox(height: 6),
+            Text('Der Sensor sendet keine Messwerte und wartet auf ein '
+                'Firmware-Update.',
+                textAlign: TextAlign.center, style: TextStyle(color: hint)),
+            const SizedBox(height: 16),
+            FilledButton.icon(
+              icon: const Icon(Icons.system_update, size: 18),
+              label: const Text('Zum Firmware-Update'),
+              onPressed: () => setState(() => _showSettings = true),
+            ),
+          ],
+        ),
+      ),
     );
   }
 

@@ -43,3 +43,9 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Generierte Desktop-Plugin-Dateien (Ziel ist nur Android; verhindert
+# Merge-Konflikte durch 'flutter pub get')
+linux/flutter/generated_plugin*
+windows/flutter/generated_plugin*
+macos/Flutter/GeneratedPluginRegistrant.swift
