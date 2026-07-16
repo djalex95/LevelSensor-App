@@ -97,6 +97,9 @@ class _HomePageState extends State<HomePage> {
   // Zuletzt ausgelesene Tankform-Kennlinie (11 Werte) oder null.
   List<int>? _linCurve;
 
+  // Im Sensor gespeicherter Name (NAME-Abfrage); null = noch nicht gelesen.
+  String? _sensorName;
+
   // Eigene App-Version (aus pubspec.yaml, zur Laufzeit gelesen).
   String? _appVersion;
 
@@ -128,6 +131,7 @@ class _HomePageState extends State<HomePage> {
           _bootloaderMode = false;
           _bootloaderVersion = null;
           _linCurve = null;
+          _sensorName = null;
         }
       });
       if (c) {
@@ -289,6 +293,14 @@ class _HomePageState extends State<HomePage> {
       _addLog('Kennlinie: ${lin.join(",")}');
       return;
     }
+    final nm = parseName(line);
+    if (nm != null) {
+      setState(() {
+        _sensorName = nm;
+        if (nm.isNotEmpty) _nameCtrl.text = nm; // Feld mit Sensorname vorbelegen
+      });
+      return;
+    }
     _addLog(line);
   }
 
@@ -375,6 +387,7 @@ class _HomePageState extends State<HomePage> {
       try {
         await _ble.send('VER');
         await _ble.send('LIN'); // aktuelle Tankform-Kennlinie abfragen
+        await _ble.send('NAME'); // gespeicherten Sensornamen abfragen
       } catch (_) {}
     } catch (e) {
       _addLog('Verbindung fehlgeschlagen: $e');
@@ -1323,10 +1336,23 @@ class _HomePageState extends State<HomePage> {
         ],
         const Divider(height: 24),
         const Text(
-          'Der Name wird dauerhaft im Modul gespeichert. Nach dem Ändern startet '
+          'Der Name wird im Sensor gespeichert und erscheint als Bluetooth-Name '
+          'und in der NMEA2000-Geräteliste (Plotter). Nach dem Ändern startet '
           'das Modul neu und die Verbindung trennt sich – danach neu verbinden.',
           style: TextStyle(color: Colors.grey, fontSize: 13),
         ),
+        if (_sensorName != null &&
+            _sensorName!.isNotEmpty &&
+            _sensorName != _deviceName) ...[
+          const SizedBox(height: 6),
+          Text(
+            'Hinweis: Bluetooth-Name („$_deviceName") weicht vom gespeicherten '
+            'Namen ab (z. B. vom Plotter geändert). Einmal „Ändern" tippen, '
+            'um beide anzugleichen.',
+            style: TextStyle(
+                color: Theme.of(context).colorScheme.tertiary, fontSize: 12),
+          ),
+        ],
         const SizedBox(height: 12),
         Row(
           children: [
@@ -1335,7 +1361,7 @@ class _HomePageState extends State<HomePage> {
                 controller: _nameCtrl,
                 maxLength: 20,
                 decoration: const InputDecoration(
-                  labelText: 'Modulname',
+                  labelText: 'Sensorname',
                   border: OutlineInputBorder(),
                   isDense: true,
                   counterText: '',

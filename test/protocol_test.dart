@@ -63,6 +63,28 @@ void main() {
     });
   });
 
+  group('parseName', () {
+    test('gültiger Name', () {
+      expect(parseName('NAME;Frischwasser Bug'), 'Frischwasser Bug');
+    });
+
+    test('leerer Name (noch nicht gesetzt)', () {
+      expect(parseName('NAME;'), '');
+    });
+
+    test('toleriert führende Störzeichen', () {
+      expect(parseName('xxNAME;Tank 2'), 'Tank 2');
+    });
+
+    test('OK NAME (Bestätigung) ist keine Namenszeile', () {
+      expect(parseName('OK NAME'), isNull);
+    });
+
+    test('andere Zeilen -> null', () {
+      expect(parseName('STAT;L=1'), isNull);
+    });
+  });
+
   group('buildLinCommand', () {
     test('gültige Tabelle', () {
       expect(buildLinCommand([0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]),
