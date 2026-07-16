@@ -67,6 +67,15 @@ List<int>? parseLin(String line) {
   return pts;
 }
 
+/// Parst `NAME;<text>` - der im Sensor gespeicherte Name (Antwort auf das
+/// Kommando `NAME` ohne Argument). Null, wenn keine NAME-Zeile; leerer
+/// String, wenn noch kein Name gesetzt ist. ("OK NAME" matcht nicht.)
+String? parseName(String line) {
+  final i = line.indexOf('NAME;');
+  if (i < 0) return null;
+  return line.substring(i + 5).trim();
+}
+
 /// Fluidtyp-Codes nach NMEA2000.
 const Map<int, String> fluidNames = {
   0: 'Kraftstoff',
