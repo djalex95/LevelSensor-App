@@ -3,8 +3,8 @@
 Handy-App für den NMEA2000-Füllstandsensor über das Würth-Proteus-e-BLE-Modul.
 Bietet dieselben Funktionen wie das PC-Programm: Live-Füllstand und Temperatur,
 Konfiguration (Fluidtyp, Kapazität, Instanz), 100%-Kalibrierung und die
-Tankform-Kennlinie. Das verwendete Protokoll ist in
-`../PC_Tools/BLE_Protokoll.md` beschrieben.
+Tankform-Kennlinie. Das verwendete Protokoll ist im Firmware-Repository
+(`CAN_FuellstandsensorBLE`) unter `PC_Tools/BLE_Protokoll.md` beschrieben.
 
 ## Enthaltene Dateien
 
@@ -17,24 +17,18 @@ Tankform-Kennlinie. Das verwendete Protokoll ist in
 
 Voraussetzung: Flutter SDK installiert (`flutter --version`).
 
-Da nur der App-Quellcode (`lib/`, `pubspec.yaml`) hier liegt, müssen die
-Plattform-Ordner (android/, ios/) einmalig erzeugt werden:
+Die Plattform-Ordner (android/, ios/ usw.) sind im Repository enthalten,
+es ist kein `flutter create` nötig:
 
 ```bash
-# 1) Leeres Flutter-Projekt an dieser Stelle erzeugen (füllt android/, ios/ auf,
-#    ohne lib/ und pubspec.yaml zu überschreiben)
-cd App_Fuellstand
-flutter create --project-name fuellstand_app .
+cd Fuellstandsensor-App
 
-# 2) Abhängigkeiten holen
+# 1) Abhängigkeiten holen
 flutter pub get
 
-# 3) Auf angeschlossenem Handy starten
+# 2) Auf angeschlossenem Handy starten
 flutter run
 ```
-
-Falls `flutter create` `pubspec.yaml`/`lib/main.dart` überschreibt: die beiden
-Dateien aus diesem Ordner danach wieder einspielen (bzw. vorher sichern).
 
 ## Berechtigungen
 
