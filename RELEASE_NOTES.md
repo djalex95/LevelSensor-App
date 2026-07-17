@@ -1,3 +1,13 @@
+## App 1.4.4
+
+- Sensorname: Der im Sensor gespeicherte Name wird beim Verbinden abgefragt
+  und im Einstellungsfeld angezeigt; Umbenennen setzt Bluetooth-Namen und
+  NMEA2000-Installation-Description (Geräteliste am Plotter) in einem Schritt
+- Hinweis, wenn Bluetooth-Name und gespeicherter Name voneinander abweichen
+  (z. B. nach Umbenennung vom Plotter aus)
+- Hinweis: Die Namensabfrage benötigt Sensor-Firmware ab 1.2.5 – mit älterer
+  Firmware verhält sich die App wie bisher
+  
 ## App 1.4.3
 
 - Schutz vor falschen Firmware-Dateien: vor dem OTA-Update wird geprüft, ob
