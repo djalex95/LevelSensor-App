@@ -418,6 +418,71 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  /// Sicherheitsabfrage vor dem Werksreset (wie im PC-Tool).
+  Future<void> _confirmFactoryReset() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Werksreset?'),
+        content: const Text(
+            'Setzt den Sensor auf Werkszustand zurück und löscht:\n\n'
+            '• 100%-Kalibrierung\n'
+            '• Tankform-Kennlinie\n'
+            '• Fluidtyp, Kapazität, Instanz\n'
+            '• Sensorname (der Bluetooth-Name wird beim nächsten Start '
+            'wieder „LevelSense-…")\n'
+            '• gespeicherte NMEA2000-Adresse\n\n'
+            'Der Sensor startet danach neu und die Verbindung trennt sich.'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Abbrechen')),
+          FilledButton(
+            style: FilledButton.styleFrom(
+                backgroundColor: Theme.of(ctx).colorScheme.error),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Zurücksetzen'),
+          ),
+        ],
+      ),
+    );
+    if (ok == true) await _factoryReset();
+  }
+
+  /// Sendet FACTORYRESET und wartet auf die Bestätigung (`OK FACTORYRESET`).
+  /// Danach startet der Sensor neu; die Trennung bringt die App automatisch
+  /// zurück zur Suchseite (siehe connected-Listener in initState).
+  Future<void> _factoryReset() async {
+    final completer = Completer<bool>();
+    final sub = _ble.lines.listen((line) {
+      final ack = parseFactoryResetAck(line);
+      if (ack != null && !completer.isCompleted) completer.complete(ack);
+    });
+    _addLog('> FACTORYRESET');
+    try {
+      await _ble.send('FACTORYRESET');
+    } catch (e) {
+      await sub.cancel();
+      _snack('Sendefehler: $e');
+      return;
+    }
+    bool? ok;
+    try {
+      ok = await completer.future.timeout(const Duration(seconds: 5));
+    } on TimeoutException {
+      ok = null;
+    }
+    await sub.cancel();
+    if (!mounted) return;
+    if (ok == true) {
+      _snack('Werksreset ausgeführt – der Sensor startet neu.');
+    } else if (ok == false) {
+      _snack('Werksreset fehlgeschlagen (Sensor meldet Fehler).');
+    } else {
+      _snack('Keine Bestätigung erhalten – Verbindung prüfen.');
+    }
+  }
+
   void _captureHeight(int i) {
     final lvl = _status?.level;
     if (lvl == null) {
@@ -815,16 +880,6 @@ class _HomePageState extends State<HomePage> {
                               ))
                           .toList(),
                     ),
-            ),
-            const Divider(height: 1),
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 8),
-              child: Center(
-                child: Text(
-                  'App-Version ${_appVersion ?? '–'}',
-                  style: TextStyle(color: hint, fontSize: 12),
-                ),
-              ),
             ),
           ],
         ),
@@ -1454,6 +1509,27 @@ class _HomePageState extends State<HomePage> {
           icon: const Icon(Icons.folder_open, size: 18),
           label: const Text('.bin-Datei wählen & aktualisieren'),
           onPressed: _startFirmwareUpdate,
+        ),
+
+        const Divider(height: 24),
+        // --- Werksreset ---
+        const Text('Werksreset',
+            style: TextStyle(fontWeight: FontWeight.w600)),
+        const SizedBox(height: 4),
+        const Text(
+          'Löscht Kalibrierung, Tankform, Konfiguration, Name und gespeicherte '
+          'NMEA2000-Adresse. Der Sensor startet danach neu.',
+          style: TextStyle(color: Colors.grey, fontSize: 13),
+        ),
+        const SizedBox(height: 8),
+        OutlinedButton.icon(
+          icon: const Icon(Icons.restart_alt, size: 18),
+          label: const Text('Auf Werkszustand zurücksetzen…'),
+          style: OutlinedButton.styleFrom(
+            foregroundColor: cs.error,
+            side: BorderSide(color: cs.error),
+          ),
+          onPressed: _confirmFactoryReset,
         ),
       ],
     );

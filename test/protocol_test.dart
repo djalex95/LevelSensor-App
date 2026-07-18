@@ -85,6 +85,25 @@ void main() {
     });
   });
 
+  group('parseFactoryResetAck', () {
+    test('OK -> true', () {
+      expect(parseFactoryResetAck('OK FACTORYRESET'), isTrue);
+    });
+
+    test('ERR -> false', () {
+      expect(parseFactoryResetAck('ERR FACTORYRESET'), isFalse);
+    });
+
+    test('toleriert führende Störzeichen', () {
+      expect(parseFactoryResetAck('xxOK FACTORYRESET'), isTrue);
+    });
+
+    test('andere Zeilen -> null', () {
+      expect(parseFactoryResetAck('STAT;L=1'), isNull);
+      expect(parseFactoryResetAck('OK CALRESET'), isNull);
+    });
+  });
+
   group('buildLinCommand', () {
     test('gültige Tabelle', () {
       expect(buildLinCommand([0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]),

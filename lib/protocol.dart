@@ -76,6 +76,15 @@ String? parseName(String line) {
   return line.substring(i + 5).trim();
 }
 
+/// Erkennt die Antwort auf das Kommando `FACTORYRESET`:
+/// true = `OK FACTORYRESET` (Sensor löscht den Config und startet neu),
+/// false = `ERR FACTORYRESET`, null = andere Zeile.
+bool? parseFactoryResetAck(String line) {
+  if (line.contains('OK FACTORYRESET')) return true;
+  if (line.contains('ERR FACTORYRESET')) return false;
+  return null;
+}
+
 /// Fluidtyp-Codes nach NMEA2000.
 const Map<int, String> fluidNames = {
   0: 'Kraftstoff',
