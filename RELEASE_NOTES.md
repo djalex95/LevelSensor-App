@@ -1,3 +1,13 @@
+## App 1.4.5
+
+- Neu: Werksreset des Sensors (Einstellungen → Modul, mit Sicherheitsabfrage).
+  Löscht Kalibrierung, Tankform, Konfiguration, Name und gespeicherte
+  Adresse; danach startet der Sensor neu, die Verbindung trennt sich und
+  die App kehrt zur Suchseite zurück. Benötigt Sensor-Firmware ab 1.2.6.
+- Hinweis: Fabrikneue oder zurückgesetzte Sensoren erscheinen beim Scan als
+  `LevelSense-<UID>` (ab Firmware 1.2.6).
+- Intern: 40 Unit-Tests.
+
 ## App 1.4.4
 
 - Sensorname: Der im Sensor gespeicherte Name wird beim Verbinden abgefragt
