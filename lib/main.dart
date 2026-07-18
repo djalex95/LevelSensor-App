@@ -346,6 +346,16 @@ class _DashboardPageState extends State<DashboardPage> {
         ],
       ),
       body: sensors.isEmpty ? _emptyHint() : _sensorList(sensors),
+      bottomNavigationBar: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.only(top: 2, bottom: 6),
+          child: Text(
+            'App-Version ${_appVersion ?? '–'}',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: Theme.of(context).hintColor, fontSize: 12),
+          ),
+        ),
+      ),
     );
   }
 
@@ -372,10 +382,6 @@ class _DashboardPageState extends State<DashboardPage> {
               label: const Text('Nach Sensor suchen'),
               onPressed: _openScanSheet,
             ),
-            const SizedBox(height: 24),
-            if (_appVersion != null)
-              Text('App-Version $_appVersion',
-                  style: TextStyle(color: hint, fontSize: 12)),
           ],
         ),
       ),
@@ -385,16 +391,7 @@ class _DashboardPageState extends State<DashboardPage> {
   Widget _sensorList(List<SensorConnection> sensors) {
     return ListView(
       padding: const EdgeInsets.fromLTRB(12, 12, 12, 24),
-      children: [
-        ...sensors.map(_sensorTile),
-        const SizedBox(height: 8),
-        Center(
-          child: Text(
-            'App-Version ${_appVersion ?? '–'}',
-            style: TextStyle(color: Theme.of(context).hintColor, fontSize: 12),
-          ),
-        ),
-      ],
+      children: sensors.map(_sensorTile).toList(),
     );
   }
 
@@ -453,37 +450,47 @@ class _DashboardPageState extends State<DashboardPage> {
     } else if (s?.level != null) {
       final lvl = s!.level!.clamp(0.0, 100.0);
       final color = _levelColor(lvl);
+      final liters = s.capacity != null
+          ? (lvl * s.capacity! / 100).toStringAsFixed(0)
+          : null;
       final details = <String>[
-        if (s.capacity != null)
-          '≈ ${(lvl * s.capacity! / 100).toStringAsFixed(0)} L von ${s.capacity} L',
+        if (s.capacity != null) 'Tank ${s.capacity} L',
         if (s.temp != null) '${s.temp!.toStringAsFixed(1)} °C',
         if (fluidNames.containsKey(s.fluidType)) fluidNames[s.fluidType]!,
       ];
-      dataRow = Row(
+      dataRow = Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('${lvl.toStringAsFixed(1)} %',
-              style: TextStyle(
-                  fontSize: 30, fontWeight: FontWeight.w700, color: color)),
-          const SizedBox(width: 14),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(8),
-                  child: LinearProgressIndicator(
-                    value: lvl / 100,
-                    minHeight: 10,
-                    backgroundColor: cs.surface,
-                    valueColor: AlwaysStoppedAnimation(color),
-                  ),
-                ),
-                const SizedBox(height: 5),
-                Text(details.join('  ·  '),
-                    style: TextStyle(color: hint, fontSize: 12)),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.baseline,
+            textBaseline: TextBaseline.alphabetic,
+            children: [
+              Text('${lvl.toStringAsFixed(1)} %',
+                  style: TextStyle(
+                      fontSize: 30, fontWeight: FontWeight.w700, color: color)),
+              if (liters != null) ...[
+                const SizedBox(width: 14),
+                Text('≈ $liters L',
+                    style: TextStyle(
+                        fontSize: 28,
+                        fontWeight: FontWeight.w700,
+                        color: cs.onSurfaceVariant)),
               ],
+            ],
+          ),
+          const SizedBox(height: 6),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(8),
+            child: LinearProgressIndicator(
+              value: lvl / 100,
+              minHeight: 10,
+              backgroundColor: cs.surface,
+              valueColor: AlwaysStoppedAnimation(color),
             ),
           ),
+          const SizedBox(height: 5),
+          Text(details.join('  ·  '),
+              style: TextStyle(color: hint, fontSize: 12)),
         ],
       );
     } else {
@@ -1211,15 +1218,19 @@ class _SensorPageState extends State<SensorPage> {
                 color: color,
               ),
             ),
-            if (s != null && s.level != null && s.capacity != null)
+            if (s != null && s.level != null && s.capacity != null) ...[
               Text(
-                '≈ ${(s.level! * s.capacity! / 100).toStringAsFixed(0)} L '
-                'von ${s.capacity} L',
+                '≈ ${(s.level! * s.capacity! / 100).toStringAsFixed(0)} L',
                 style: TextStyle(
-                    fontSize: 15,
-                    fontWeight: FontWeight.w500,
+                    fontSize: 32,
+                    fontWeight: FontWeight.w700,
                     color: cs.onSurfaceVariant),
               ),
+              Text(
+                'von ${s.capacity} L Tankvolumen',
+                style: TextStyle(fontSize: 13, color: cs.onSurfaceVariant),
+              ),
+            ],
             const SizedBox(height: 12),
             ClipRRect(
               borderRadius: BorderRadius.circular(12),
