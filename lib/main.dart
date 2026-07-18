@@ -816,6 +816,16 @@ class _HomePageState extends State<HomePage> {
                           .toList(),
                     ),
             ),
+            const Divider(height: 1),
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              child: Center(
+                child: Text(
+                  'App-Version ${_appVersion ?? '–'}',
+                  style: TextStyle(color: hint, fontSize: 12),
+                ),
+              ),
+            ),
           ],
         ),
       ),
