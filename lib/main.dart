@@ -10,12 +10,11 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
-import 'ble_service.dart';
 import 'dfu.dart';
 import 'github_releases.dart';
 import 'protocol.dart';
+import 'sensor_connection.dart';
 
 void main() => runApp(const FuellstandApp());
 
@@ -39,119 +38,74 @@ class FuellstandApp extends StatelessWidget {
         brightness: Brightness.dark,
         useMaterial3: true,
       ),
-      home: const HomePage(),
+      home: const DashboardPage(),
     );
   }
 }
 
-class HomePage extends StatefulWidget {
-  const HomePage({super.key});
+// ======================================================================
+// Dashboard: eine Kachel je bekanntem Sensor, alle gleichzeitig verbunden
+// ======================================================================
+
+class DashboardPage extends StatefulWidget {
+  const DashboardPage({super.key});
 
   @override
-  State<HomePage> createState() => _HomePageState();
+  State<DashboardPage> createState() => _DashboardPageState();
 }
 
-class _HomePageState extends State<HomePage> {
-  final ProteusBle _ble = ProteusBle();
-
-  List<ScanResult> _scanResults = [];
-  bool _isScanning = false;
-  bool _connected = false;
-  String _deviceName = '';
-  BluetoothDevice? _device;
-  SensorStatus? _status;
-  final List<String> _log = [];
-
-  final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
-  bool _showSettings = false;
-  bool _autoConnecting = false;
-
-  // Merker für den zuletzt verbundenen Sensor (SharedPreferences).
-  static const _prefLastId = 'last_device_id';
-  static const _prefLastName = 'last_device_name';
-
-  // Firmware-Releases aus GitHub (öffentliches Repo).
-  static const _fwRepo = GithubReleases('djalex95', 'LevelsensorV1');
+class _DashboardPageState extends State<DashboardPage> {
+  final SensorRegistry _registry = SensorRegistry();
+  String? _appVersion;
 
   // App-eigene Updates (APK) aus dem App-Repo.
   static const _appRepo = GithubAppUpdate('djalex95', 'LevelSensor-App');
   static const MethodChannel _installerChannel = MethodChannel('app/installer');
-  List<FirmwareAsset> _fwAssets = [];
-  FirmwareAsset? _fwSel;
-  bool _fwLoading = false;
-  String? _fwError;
-
-  // Automatische Update-Prüfung nach dem Verbinden.
-  bool _updateChecked = false; // pro Verbindung nur einmal prüfen
-  bool _updateAvailable = false;
-  String? _latestVersion;
-
-  // Empfangsqualität (RSSI des verbundenen Geräts).
-  int? _rssi;
-  Timer? _rssiTimer;
-
-  // Sensor steckt im Bootloader (kein STAT, meldet BLV auf VER).
-  bool _bootloaderMode = false;
-  String? _bootloaderVersion;
-
-  // Zuletzt ausgelesene Tankform-Kennlinie (11 Werte) oder null.
-  List<int>? _linCurve;
-
-  // Im Sensor gespeicherter Name (NAME-Abfrage); null = noch nicht gelesen.
-  String? _sensorName;
-
-  // Eigene App-Version (aus pubspec.yaml, zur Laufzeit gelesen).
-  String? _appVersion;
-
-  int _fluidSel = 1;
-  final TextEditingController _capCtrl = TextEditingController();
-  final TextEditingController _instCtrl = TextEditingController();
-  final TextEditingController _nameCtrl = TextEditingController();
-  bool _configInit = false;
-
-  // Gemessene Füllhöhe (%) je Schritt für den Tankform-Assistenten
-  final List<TextEditingController> _heightCtrls =
-      List.generate(11, (_) => TextEditingController());
-
-  final List<StreamSubscription> _subs = [];
 
   @override
   void initState() {
     super.initState();
-    _subs.add(_ble.lines.listen(_onLine));
-    _subs.add(_ble.connected.listen((c) {
-      setState(() {
-        _connected = c;
-        if (!c) {
-          _rssi = null;
-          _showSettings = false; // bei Trennung zurück zur Startseite
-          _updateChecked = false;
-          _updateAvailable = false;
-          _latestVersion = null;
-          _bootloaderMode = false;
-          _bootloaderVersion = null;
-          _linCurve = null;
-          _sensorName = null;
-        }
-      });
-      if (c) {
-        _startRssiPolling();
-      } else {
-        _stopRssiPolling();
-      }
-    }));
-    _subs.add(FlutterBluePlus.scanResults
-        .listen((r) => setState(() => _scanResults = r)));
-    _subs.add(FlutterBluePlus.isScanning
-        .listen((s) => setState(() => _isScanning = s)));
-    _loadAppVersion();
+    _registry.addListener(_onChange);
     _init();
+  }
+
+  void _onChange() {
+    if (mounted) setState(() {});
   }
 
   Future<void> _init() async {
     await _requestPermissions();
-    _checkAppUpdate(); // unabhängig von der Sensorverbindung, parallel
-    await _tryAutoConnect();
+    _loadAppVersion();
+    _checkAppUpdate(); // unabhängig von den Sensorverbindungen, parallel
+    await _registry.load();
+    _registry.start(); // alle bekannten Sensoren verbinden + Auto-Reconnect
+  }
+
+  @override
+  void dispose() {
+    _registry.removeListener(_onChange);
+    _registry.dispose();
+    super.dispose();
+  }
+
+  Future<void> _requestPermissions() async {
+    if (Platform.isAndroid) {
+      await [
+        Permission.bluetoothScan,
+        Permission.bluetoothConnect,
+        Permission.locationWhenInUse,
+      ].request();
+    }
+  }
+
+  Future<void> _loadAppVersion() async {
+    try {
+      final info = await PackageInfo.fromPlatform();
+      if (mounted) {
+        setState(() =>
+            _appVersion = '${info.version} (Build ${info.buildNumber})');
+      }
+    } catch (_) {/* z. B. auf nicht unterstützten Plattformen – ignorieren */}
   }
 
   /// Beim Start prüfen, ob im App-Repo eine neuere App-Version (APK) liegt,
@@ -213,209 +167,507 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  Future<void> _loadAppVersion() async {
-    try {
-      final info = await PackageInfo.fromPlatform();
-      if (mounted) {
-        setState(() =>
-            _appVersion = '${info.version} (Build ${info.buildNumber})');
-      }
-    } catch (_) {/* z. B. auf nicht unterstützten Plattformen – ignorieren */}
-  }
-
-  /// Beim Start versuchen, sich mit dem zuletzt verbundenen Sensor zu verbinden.
-  Future<void> _tryAutoConnect() async {
-    final prefs = await SharedPreferences.getInstance();
-    final id = prefs.getString(_prefLastId);
-    if (id == null || id.isEmpty) return;
-    final name = prefs.getString(_prefLastName) ?? '';
-    setState(() => _autoConnecting = true);
-    try {
-      final device = BluetoothDevice.fromId(id);
-      _addLog('Verbinde automatisch mit ${name.isNotEmpty ? name : id}…');
-      await _connect(device, fallbackName: name);
-    } catch (e) {
-      _addLog('Auto-Verbinden fehlgeschlagen: $e');
-    } finally {
-      if (mounted) setState(() => _autoConnecting = false);
-    }
-  }
-
-  Future<void> _saveLastDevice(BluetoothDevice device, String name) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_prefLastId, device.remoteId.str);
-    await prefs.setString(_prefLastName, name);
-  }
-
-  Future<void> _requestPermissions() async {
-    if (Platform.isAndroid) {
-      await [
-        Permission.bluetoothScan,
-        Permission.bluetoothConnect,
-        Permission.locationWhenInUse,
-      ].request();
-    }
-  }
-
-  void _onLine(String line) {
-    // Bootloader meldet sich mit "BLV;x.y.z" (statt STAT) -> Bootloader-Modus.
-    if (line.startsWith('BLV')) {
-      final parts = line.split(';');
-      setState(() {
-        _bootloaderMode = true;
-        _bootloaderVersion = parts.length > 1 ? parts[1].trim() : null;
-      });
-      return;
-    }
-
-    final st = SensorStatus.parse(line);
-    if (st != null) {
-      setState(() {
-        _status = st;
-        _bootloaderMode = false; // normale Firmware sendet STAT
-        if (!_configInit) {
-          _fluidSel = fluidNames.containsKey(st.fluidType) ? st.fluidType! : 1;
-          _capCtrl.text = (st.capacity ?? 0).toString();
-          _instCtrl.text = (st.instance ?? 0).toString();
-          _configInit = true;
-        }
-      });
-      // Einmalig pro Verbindung auf ein Firmware-Update prüfen.
-      if (!_updateChecked && st.version != null) {
-        _updateChecked = true;
-        _checkForUpdate(st.version!);
-      }
-      return;
-    }
-    final lin = parseLin(line);
-    if (lin != null) {
-      setState(() => _linCurve = lin);
-      _addLog('Kennlinie: ${lin.join(",")}');
-      return;
-    }
-    final nm = parseName(line);
-    if (nm != null) {
-      setState(() {
-        _sensorName = nm;
-        if (nm.isNotEmpty) _nameCtrl.text = nm; // Feld mit Sensorname vorbelegen
-      });
-      return;
-    }
-    _addLog(line);
-  }
-
-  /// Kurz auf GitHub prüfen, ob eine neuere Firmware verfügbar ist als die auf
-  /// dem Sensor. Bei Erfolg wird die Liste gleich mitgeladen (spart das ↻).
-  Future<void> _checkForUpdate(String current) async {
-    try {
-      final assets = await _fwRepo.fetchBinAssets();
-      if (assets.isEmpty || !mounted) return;
-      final latest = assets.first.version; // neueste zuerst
-      setState(() {
-        _fwAssets = assets;
-        _fwSel ??= assets.first;
-        _latestVersion = latest;
-        _updateAvailable = isNewerVersion(latest, current);
-      });
-    } catch (_) {/* offline o. ä. – still ignorieren */}
-  }
-
-  void _startRssiPolling() {
-    _rssiTimer?.cancel();
-    _readRssi(); // sofort einmal messen
-    _rssiTimer =
-        Timer.periodic(const Duration(seconds: 3), (_) => _readRssi());
-  }
-
-  void _stopRssiPolling() {
-    _rssiTimer?.cancel();
-    _rssiTimer = null;
-  }
-
-  Future<void> _readRssi() async {
-    final d = _device;
-    if (d == null) return;
-    try {
-      final r = await d.readRssi();
-      if (mounted) setState(() => _rssi = r);
-    } catch (_) {/* Verbindung evtl. instabil – ignorieren */}
-  }
-
-  bool _listEq(List<int> a, List<int> b) {
-    if (a.length != b.length) return false;
-    for (var i = 0; i < a.length; i++) {
-      if (a[i] != b[i]) return false;
-    }
-    return true;
-  }
-
-  void _addLog(String msg) {
-    setState(() {
-      _log.insert(0, msg);
-      if (_log.length > 40) _log.removeLast();
-    });
-  }
+  // ---------------- Sensor suchen / hinzufügen ----------------
 
   Future<void> _startScan() async {
     await _requestPermissions();
-    _scanResults = [];
     try {
       await FlutterBluePlus.startScan(timeout: const Duration(seconds: 8));
     } catch (e) {
-      _addLog('Scan-Fehler: $e');
-    }
-  }
-
-  Future<void> _connect(BluetoothDevice device, {String? fallbackName}) async {
-    await FlutterBluePlus.stopScan();
-    try {
-      await _ble.connect(device);
-      _device = device;
-      _configInit = false;
-      final pn = device.platformName;
-      _deviceName = pn.isNotEmpty
-          ? pn
-          : (fallbackName != null && fallbackName.isNotEmpty
-              ? fallbackName
-              : device.remoteId.str);
-      _nameCtrl.text = _deviceName;
-      _addLog('Verbunden mit $_deviceName');
-      await _saveLastDevice(device, _deviceName); // Sensor merken
-      // Bootloader-Erkennung: normale Firmware antwortet mit STAT/„VER;..",
-      // der Bootloader mit „BLV;..". Im Normalbetrieb überschreibt das erste
-      // STAT den Bootloader-Modus wieder.
-      try {
-        await _ble.send('VER');
-        await _ble.send('LIN'); // aktuelle Tankform-Kennlinie abfragen
-        await _ble.send('NAME'); // gespeicherten Sensornamen abfragen
-      } catch (_) {}
-    } catch (e) {
-      _addLog('Verbindung fehlgeschlagen: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Verbindung fehlgeschlagen: $e')));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Scan-Fehler: $e')));
       }
     }
   }
 
-  Future<void> _send(String cmd) async {
-    _addLog('> $cmd');
+  void _openScanSheet() {
+    _startScan();
+    showModalBottomSheet(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) {
+        final hint = Theme.of(ctx).hintColor;
+        return SafeArea(
+          child: SizedBox(
+            height: 420,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                  child: Row(
+                    children: [
+                      Text('Sensor hinzufügen',
+                          style: Theme.of(ctx).textTheme.titleMedium),
+                      const Spacer(),
+                      StreamBuilder<bool>(
+                        stream: FlutterBluePlus.isScanning,
+                        initialData: true,
+                        builder: (_, snap) => snap.data == true
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child:
+                                    CircularProgressIndicator(strokeWidth: 2))
+                            : TextButton.icon(
+                                icon: const Icon(Icons.refresh, size: 18),
+                                label: const Text('Erneut suchen'),
+                                onPressed: _startScan,
+                              ),
+                      ),
+                    ],
+                  ),
+                ),
+                const Divider(height: 1),
+                Expanded(
+                  child: StreamBuilder<List<ScanResult>>(
+                    stream: FlutterBluePlus.scanResults,
+                    initialData: const [],
+                    builder: (_, snap) {
+                      final results = (snap.data ?? const <ScanResult>[])
+                          .where((r) => r.device.platformName.isNotEmpty)
+                          .toList();
+                      if (results.isEmpty) {
+                        return Center(
+                            child: Text('Suche…',
+                                style: TextStyle(color: hint)));
+                      }
+                      return ListView(
+                        children: results.map((r) {
+                          final known =
+                              _registry.byId(r.device.remoteId.str) != null;
+                          return ListTile(
+                            leading: const Icon(Icons.sensors),
+                            title: Text(r.device.platformName),
+                            subtitle: Text(known
+                                ? 'bereits in der Liste'
+                                : r.device.remoteId.str),
+                            trailing: Text('${r.rssi} dBm'),
+                            enabled: !known,
+                            onTap: () => _addFromScan(r),
+                          );
+                        }).toList(),
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _addFromScan(ScanResult r) async {
     try {
-      await _ble.send(cmd);
-    } catch (e) {
-      _addLog('Sendefehler: $e');
+      await FlutterBluePlus.stopScan();
+    } catch (_) {}
+    final conn =
+        _registry.addSensor(r.device.remoteId.str, r.device.platformName);
+    if (mounted) Navigator.pop(context); // Sheet schließen
+    conn.connect().catchError((_) {});
+  }
+
+  // ---------------- Kachel-Menü (langer Druck) ----------------
+
+  void _tileMenu(SensorConnection c) {
+    showModalBottomSheet(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: Icon(c.connected ? Icons.link_off : Icons.link),
+              title: Text(c.connected ? 'Trennen' : 'Jetzt verbinden'),
+              onTap: () {
+                Navigator.pop(ctx);
+                if (c.connected) {
+                  c.disconnect();
+                } else {
+                  c.connect().catchError((_) {});
+                }
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.delete_outline),
+              title: const Text('Aus der Liste entfernen'),
+              onTap: () async {
+                Navigator.pop(ctx);
+                final ok = await showDialog<bool>(
+                  context: context,
+                  builder: (dctx) => AlertDialog(
+                    title: const Text('Sensor entfernen?'),
+                    content: Text(
+                        '„${_tileName(c)}" wird aus der Liste entfernt und '
+                        'nicht mehr automatisch verbunden. Am Sensor selbst '
+                        'ändert sich nichts.'),
+                    actions: [
+                      TextButton(
+                          onPressed: () => Navigator.pop(dctx, false),
+                          child: const Text('Abbrechen')),
+                      FilledButton(
+                          onPressed: () => Navigator.pop(dctx, true),
+                          child: const Text('Entfernen')),
+                    ],
+                  ),
+                );
+                if (ok == true) await _registry.removeSensor(c);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ---------------- Aufbau ----------------
+
+  String _tileName(SensorConnection c) =>
+      (c.sensorName != null && c.sensorName!.isNotEmpty)
+          ? c.sensorName!
+          : c.displayName;
+
+  @override
+  Widget build(BuildContext context) {
+    final sensors = _registry.sensors;
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Füllstandsensor'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.add),
+            tooltip: 'Sensor hinzufügen',
+            onPressed: _openScanSheet,
+          ),
+        ],
+      ),
+      body: sensors.isEmpty ? _emptyHint() : _sensorList(sensors),
+    );
+  }
+
+  Widget _emptyHint() {
+    final hint = Theme.of(context).hintColor;
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.sensors_off, size: 48, color: hint),
+            const SizedBox(height: 12),
+            Text('Noch kein Sensor eingerichtet',
+                style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 6),
+            Text(
+                'Füge deine Sensoren hinzu – sie werden dann alle '
+                'gleichzeitig verbunden und hier angezeigt.',
+                textAlign: TextAlign.center, style: TextStyle(color: hint)),
+            const SizedBox(height: 16),
+            FilledButton.icon(
+              icon: const Icon(Icons.bluetooth_searching),
+              label: const Text('Nach Sensor suchen'),
+              onPressed: _openScanSheet,
+            ),
+            const SizedBox(height: 24),
+            if (_appVersion != null)
+              Text('App-Version $_appVersion',
+                  style: TextStyle(color: hint, fontSize: 12)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _sensorList(List<SensorConnection> sensors) {
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 24),
+      children: [
+        ...sensors.map(_sensorTile),
+        const SizedBox(height: 8),
+        Center(
+          child: Text(
+            'App-Version ${_appVersion ?? '–'}',
+            style: TextStyle(color: Theme.of(context).hintColor, fontSize: 12),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Color _levelColor(double v) {
+    if (v < 20) return const Color(0xFFE53935);
+    if (v < 50) return const Color(0xFFFB8C00);
+    return const Color(0xFF43A047);
+  }
+
+  int _signalLit(int? rssi) {
+    if (rssi == null) return 0;
+    if (rssi >= -55) return 5;
+    if (rssi >= -65) return 4;
+    if (rssi >= -75) return 3;
+    if (rssi >= -85) return 2;
+    return 1;
+  }
+
+  Widget _sensorTile(SensorConnection c) {
+    final cs = Theme.of(context).colorScheme;
+    final hint = Theme.of(context).hintColor;
+    final s = c.status;
+
+    String stateText;
+    Color stateColor;
+    if (c.connected) {
+      stateText = c.bootloaderMode ? 'Bootloader-Modus' : 'verbunden';
+      stateColor = c.bootloaderMode ? cs.tertiary : const Color(0xFF43A047);
+    } else if (c.connecting) {
+      stateText = 'verbinde…';
+      stateColor = hint;
+    } else {
+      stateText = 'getrennt – verbinde automatisch neu';
+      stateColor = hint;
     }
+
+    final lit = _signalLit(c.rssi);
+    final sigColor = lit >= 4
+        ? const Color(0xFF43A047)
+        : lit >= 2
+            ? const Color(0xFFFB8C00)
+            : const Color(0xFFE53935);
+
+    Widget dataRow;
+    if (c.bootloaderMode) {
+      dataRow = Row(
+        children: [
+          Icon(Icons.system_update_alt, size: 20, color: cs.tertiary),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text('Wartet auf ein Firmware-Update.',
+                style: TextStyle(color: hint, fontSize: 13)),
+          ),
+        ],
+      );
+    } else if (s?.level != null) {
+      final lvl = s!.level!.clamp(0.0, 100.0);
+      final color = _levelColor(lvl);
+      final details = <String>[
+        if (s.capacity != null)
+          '≈ ${(lvl * s.capacity! / 100).toStringAsFixed(0)} L von ${s.capacity} L',
+        if (s.temp != null) '${s.temp!.toStringAsFixed(1)} °C',
+        if (fluidNames.containsKey(s.fluidType)) fluidNames[s.fluidType]!,
+      ];
+      dataRow = Row(
+        children: [
+          Text('${lvl.toStringAsFixed(1)} %',
+              style: TextStyle(
+                  fontSize: 30, fontWeight: FontWeight.w700, color: color)),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(8),
+                  child: LinearProgressIndicator(
+                    value: lvl / 100,
+                    minHeight: 10,
+                    backgroundColor: cs.surface,
+                    valueColor: AlwaysStoppedAnimation(color),
+                  ),
+                ),
+                const SizedBox(height: 5),
+                Text(details.join('  ·  '),
+                    style: TextStyle(color: hint, fontSize: 12)),
+              ],
+            ),
+          ),
+        ],
+      );
+    } else {
+      dataRow = Text('Noch keine Messwerte empfangen.',
+          style: TextStyle(color: hint, fontSize: 13));
+    }
+
+    return Card(
+      color: cs.surfaceContainerHighest,
+      margin: const EdgeInsets.only(bottom: 12),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: () {
+          Navigator.of(context).push(MaterialPageRoute(
+              builder: (_) => SensorPage(conn: c, registry: _registry)));
+        },
+        onLongPress: () => _tileMenu(c),
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Opacity(
+            opacity: c.connected ? 1 : 0.55,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(Icons.sensors,
+                        size: 20,
+                        color: c.connected ? cs.primary : hint),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(_tileName(c),
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                  fontSize: 16, fontWeight: FontWeight.w600)),
+                          Text(stateText,
+                              style:
+                                  TextStyle(fontSize: 12, color: stateColor)),
+                        ],
+                      ),
+                    ),
+                    if (c.updateAvailable)
+                      Padding(
+                        padding: const EdgeInsets.only(right: 8),
+                        child: Badge(
+                          label: const Text('Update'),
+                          backgroundColor: cs.primary,
+                        ),
+                      ),
+                    if (c.connected) _SignalBars(lit: lit, color: sigColor),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                dataRow,
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ======================================================================
+// Detailseite eines Sensors: Live-Anzeige + Einstellungen + OTA-Update
+// ======================================================================
+
+class SensorPage extends StatefulWidget {
+  const SensorPage({super.key, required this.conn, required this.registry});
+
+  final SensorConnection conn;
+  final SensorRegistry registry;
+
+  @override
+  State<SensorPage> createState() => _SensorPageState();
+}
+
+class _SensorPageState extends State<SensorPage> {
+  SensorConnection get c => widget.conn;
+
+  bool _showSettings = false;
+  bool _configInit = false;
+
+  int _fluidSel = 1;
+  final TextEditingController _capCtrl = TextEditingController();
+  final TextEditingController _instCtrl = TextEditingController();
+  final TextEditingController _nameCtrl = TextEditingController();
+  final FocusNode _nameFocus = FocusNode();
+  String? _lastSensorName; // zuletzt ins Feld übernommener Name
+
+  // Gemessene Füllhöhe (%) je Schritt für den Tankform-Assistenten
+  final List<TextEditingController> _heightCtrls =
+      List.generate(11, (_) => TextEditingController());
+
+  // Firmware-Releases aus GitHub (öffentliches Repo).
+  static const _fwRepo = GithubReleases('djalex95', 'LevelsensorV1');
+  List<FirmwareAsset> _fwAssets = [];
+  FirmwareAsset? _fwSel;
+  bool _fwLoading = false;
+  String? _fwError;
+
+  @override
+  void initState() {
+    super.initState();
+    c.addListener(_onConn);
+    // Bereits vorhandene Daten übernehmen (Seite kann jederzeit geöffnet werden)
+    _fwAssets = widget.registry.fwAssets;
+    if (_fwAssets.isNotEmpty) _fwSel = _fwAssets.first;
+    _seedFromConn();
+  }
+
+  void _seedFromConn() {
+    final s = c.status;
+    if (s != null && !_configInit) {
+      _fluidSel = fluidNames.containsKey(s.fluidType) ? s.fluidType! : 1;
+      _capCtrl.text = (s.capacity ?? 0).toString();
+      _instCtrl.text = (s.instance ?? 0).toString();
+      _configInit = true;
+    }
+    final nm = c.sensorName;
+    if (nm != null && nm.isNotEmpty && nm != _lastSensorName) {
+      if (!_nameFocus.hasFocus) _nameCtrl.text = nm;
+      _lastSensorName = nm;
+    } else if (_nameCtrl.text.isEmpty) {
+      _nameCtrl.text = c.displayName;
+    }
+  }
+
+  void _onConn() {
+    if (!mounted) return;
+    setState(() {
+      _seedFromConn();
+      if (!c.connected) {
+        _configInit = false; // nach Neuverbinden neu übernehmen
+        // Bei Trennung zurück zur Live-Ansicht (nicht während eines OTA,
+        // dort verwaltet der DFU-Transfer die Verbindung selbst).
+        if (_showSettings && !c.dfuRunning) _showSettings = false;
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    c.removeListener(_onConn);
+    _capCtrl.dispose();
+    _instCtrl.dispose();
+    _nameCtrl.dispose();
+    _nameFocus.dispose();
+    for (final ctrl in _heightCtrls) {
+      ctrl.dispose();
+    }
+    super.dispose();
+  }
+
+  String get _title =>
+      (c.sensorName != null && c.sensorName!.isNotEmpty)
+          ? c.sensorName!
+          : c.displayName;
+
+  // ---------------- Senden / Kommandos ----------------
+
+  Future<void> _send(String cmd) async {
+    try {
+      await c.send(cmd);
+    } catch (e) {
+      _snack('Sendefehler: $e');
+    }
+  }
+
+  void _snack(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(msg)));
   }
 
   void _changeName() {
     final name = _nameCtrl.text.trim();
     if (name.isEmpty) return;
     _send('NAME $name');
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('Name gesendet. Das Modul startet neu – bitte danach neu verbinden.'),
-      ));
-    }
+    _snack('Name gesendet. Das Modul startet neu – die Verbindung wird '
+        'automatisch wiederhergestellt.');
   }
 
   /// Sicherheitsabfrage vor dem Werksreset (wie im PC-Tool).
@@ -450,17 +702,15 @@ class _HomePageState extends State<HomePage> {
   }
 
   /// Sendet FACTORYRESET und wartet auf die Bestätigung (`OK FACTORYRESET`).
-  /// Danach startet der Sensor neu; die Trennung bringt die App automatisch
-  /// zurück zur Suchseite (siehe connected-Listener in initState).
   Future<void> _factoryReset() async {
     final completer = Completer<bool>();
-    final sub = _ble.lines.listen((line) {
+    final sub = c.ble.lines.listen((line) {
       final ack = parseFactoryResetAck(line);
       if (ack != null && !completer.isCompleted) completer.complete(ack);
     });
-    _addLog('> FACTORYRESET');
+    c.addLog('> FACTORYRESET');
     try {
-      await _ble.send('FACTORYRESET');
+      await c.ble.send('FACTORYRESET');
     } catch (e) {
       await sub.cancel();
       _snack('Sendefehler: $e');
@@ -476,6 +726,7 @@ class _HomePageState extends State<HomePage> {
     if (!mounted) return;
     if (ok == true) {
       _snack('Werksreset ausgeführt – der Sensor startet neu.');
+      Navigator.of(context).popUntil((r) => r.isFirst); // zum Dashboard
     } else if (ok == false) {
       _snack('Werksreset fehlgeschlagen (Sensor meldet Fehler).');
     } else {
@@ -484,9 +735,9 @@ class _HomePageState extends State<HomePage> {
   }
 
   void _captureHeight(int i) {
-    final lvl = _status?.level;
+    final lvl = c.status?.level;
     if (lvl == null) {
-      _addLog('Noch kein Füllstand empfangen');
+      c.addLog('Noch kein Füllstand empfangen');
       return;
     }
     setState(() => _heightCtrls[i].text = lvl.toStringAsFixed(1));
@@ -523,8 +774,8 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _sendTankForm() async {
     try {
-      final heights = _heightCtrls.map((c) {
-        final v = double.tryParse(c.text.trim().replaceAll(',', '.'));
+      final heights = _heightCtrls.map((ctrl) {
+        final v = double.tryParse(ctrl.text.trim().replaceAll(',', '.'));
         if (v == null) {
           throw ArgumentError('Alle 11 Felder ausfüllen (»Übernehmen«)');
         }
@@ -541,27 +792,21 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  void _snack(String msg) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text(msg)));
-  }
-
   /// Sendet die Kennlinie und wartet auf die Bestätigung des Sensors
   /// (`OK LIN` / `ERR LIN`), zeigt das Ergebnis an.
   Future<void> _sendLin(List<int> pts) async {
     final cmd = buildLinCommand(pts);
     final completer = Completer<bool>();
-    final sub = _ble.lines.listen((line) {
+    final sub = c.ble.lines.listen((line) {
       if (line.contains('OK LIN')) {
         if (!completer.isCompleted) completer.complete(true);
       } else if (line.contains('ERR LIN')) {
         if (!completer.isCompleted) completer.complete(false);
       }
     });
-    _addLog('> $cmd');
+    c.addLog('> $cmd');
     try {
-      await _ble.send(cmd);
+      await c.ble.send(cmd);
     } catch (e) {
       await sub.cancel();
       _snack('Sendefehler: $e');
@@ -579,7 +824,7 @@ class _HomePageState extends State<HomePage> {
       _snack('Keine Bestätigung erhalten – bitte erneut versuchen.');
     } else if (ok) {
       _snack('Kennlinie übernommen ✓');
-      setState(() => _linCurve = pts); // Status sofort aktualisieren
+      setState(() => c.linCurve = pts); // Status sofort aktualisieren
     } else {
       _snack('Kennlinie abgelehnt (ungültige Werte).');
     }
@@ -663,7 +908,9 @@ class _HomePageState extends State<HomePage> {
   Future<void> _importCurveCsv() async {
     try {
       final res = await FilePicker.platform.pickFiles(
-          withData: true, type: FileType.custom, allowedExtensions: const ['csv']);
+          withData: true,
+          type: FileType.custom,
+          allowedExtensions: const ['csv']);
       if (res == null || res.files.single.bytes == null) return;
       final text = utf8.decode(res.files.single.bytes!);
       final vals = <int>[];
@@ -692,58 +939,76 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  @override
-  void dispose() {
-    _rssiTimer?.cancel();
-    for (final s in _subs) {
-      s.cancel();
-    }
-    _ble.dispose();
-    _capCtrl.dispose();
-    _instCtrl.dispose();
-    _nameCtrl.dispose();
-    for (final c in _heightCtrls) {
-      c.dispose();
-    }
-    super.dispose();
-  }
+  // ---------------- Aufbau ----------------
 
   @override
   Widget build(BuildContext context) {
-    return _showSettings ? _buildSettingsScaffold() : _buildHomeScaffold();
+    return _showSettings ? _buildSettingsScaffold() : _buildMainScaffold();
   }
 
-  // ---------------- Startseite (Live-Anzeige) ----------------
-
-  Widget _buildHomeScaffold() {
+  Widget _buildMainScaffold() {
     return Scaffold(
-      key: _scaffoldKey,
       appBar: AppBar(
-        title: Text(_connected ? _deviceName : 'Füllstandsensor'),
+        title: Text(_title),
         actions: [
           IconButton(
             icon: Badge(
-              isLabelVisible: _updateAvailable,
+              isLabelVisible: c.updateAvailable,
               child: const Icon(Icons.settings),
             ),
-            tooltip: _updateAvailable
+            tooltip: c.updateAvailable
                 ? 'Einstellungen – Firmware-Update verfügbar'
                 : 'Einstellungen',
-            onPressed:
-                _connected ? () => setState(() => _showSettings = true) : null,
+            onPressed: c.connected
+                ? () => setState(() => _showSettings = true)
+                : null,
           ),
         ],
       ),
-      drawer: _buildDeviceDrawer(),
-      body: _connected ? _buildHomeBody() : _buildDisconnectedHint(),
+      body: _buildMainBody(),
     );
   }
 
-  Widget _buildHomeBody() {
-    if (_bootloaderMode) return _bootloaderCard();
+  Widget _buildMainBody() {
+    if (!c.connected) return _disconnectedHint();
+    if (c.bootloaderMode) return _bootloaderCard();
     return ListView(
       padding: const EdgeInsets.fromLTRB(12, 12, 12, 24),
       children: [_levelCard()],
+    );
+  }
+
+  Widget _disconnectedHint() {
+    final hint = Theme.of(context).hintColor;
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (c.connecting) ...[
+              const CircularProgressIndicator(),
+              const SizedBox(height: 16),
+              Text('Verbinde…', style: TextStyle(color: hint)),
+            ] else ...[
+              Icon(Icons.bluetooth_disabled, size: 48, color: hint),
+              const SizedBox(height: 12),
+              Text('Verbindung getrennt',
+                  style: Theme.of(context).textTheme.titleMedium),
+              const SizedBox(height: 6),
+              Text('Es wird automatisch neu verbunden, sobald der Sensor '
+                  'erreichbar ist.',
+                  textAlign: TextAlign.center, style: TextStyle(color: hint)),
+              const SizedBox(height: 16),
+              FilledButton.icon(
+                icon: const Icon(Icons.link),
+                label: const Text('Jetzt verbinden'),
+                onPressed: () => c.connect().catchError((_) {}),
+              ),
+            ],
+          ],
+        ),
+      ),
     );
   }
 
@@ -761,7 +1026,7 @@ class _HomePageState extends State<HomePage> {
             Text('Sensor im Bootloader-Modus',
                 style: Theme.of(context).textTheme.titleMedium),
             const SizedBox(height: 6),
-            Text('Bootloader-Version: ${_bootloaderVersion ?? '–'}',
+            Text('Bootloader-Version: ${c.bootloaderVersion ?? '–'}',
                 style: TextStyle(color: hint)),
             const SizedBox(height: 6),
             Text('Der Sensor sendet keine Messwerte und wartet auf ein '
@@ -772,114 +1037,6 @@ class _HomePageState extends State<HomePage> {
               icon: const Icon(Icons.system_update, size: 18),
               label: const Text('Zum Firmware-Update'),
               onPressed: () => setState(() => _showSettings = true),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildDisconnectedHint() {
-    final hint = Theme.of(context).hintColor;
-    if (_autoConnecting) {
-      return Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const CircularProgressIndicator(),
-            const SizedBox(height: 16),
-            Text('Verbinde mit letztem Sensor…',
-                style: TextStyle(color: hint)),
-          ],
-        ),
-      );
-    }
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.bluetooth_disabled, size: 48, color: hint),
-            const SizedBox(height: 12),
-            Text('Kein Gerät verbunden',
-                style: Theme.of(context).textTheme.titleMedium),
-            const SizedBox(height: 6),
-            Text('Öffne links das Menü und wähle deinen Sensor.',
-                textAlign: TextAlign.center, style: TextStyle(color: hint)),
-            const SizedBox(height: 16),
-            FilledButton.icon(
-              icon: const Icon(Icons.menu),
-              label: const Text('Geräte-Menü öffnen'),
-              onPressed: () => _scaffoldKey.currentState?.openDrawer(),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  // ---------------- Geräte-Menü (Drawer) ----------------
-
-  Widget _buildDeviceDrawer() {
-    final devices =
-        _scanResults.where((r) => r.device.platformName.isNotEmpty).toList();
-    final cs = Theme.of(context).colorScheme;
-    final hint = Theme.of(context).hintColor;
-    return Drawer(
-      child: SafeArea(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
-              child:
-                  Text('Geräte', style: Theme.of(context).textTheme.titleLarge),
-            ),
-            if (_connected)
-              ListTile(
-                leading: CircleAvatar(
-                    backgroundColor: cs.primaryContainer,
-                    child: const Icon(Icons.sensors)),
-                title: Text(_deviceName),
-                subtitle: const Text('verbunden'),
-                trailing: IconButton(
-                  icon: const Icon(Icons.link_off),
-                  tooltip: 'Trennen',
-                  onPressed: () => _ble.disconnect(),
-                ),
-              ),
-            Padding(
-              padding: const EdgeInsets.all(12),
-              child: FilledButton.icon(
-                icon: Icon(_isScanning
-                    ? Icons.hourglass_top
-                    : Icons.bluetooth_searching),
-                label: Text(_isScanning ? 'Suche läuft…' : 'Nach Sensor suchen'),
-                onPressed: _isScanning ? null : _startScan,
-              ),
-            ),
-            const Divider(height: 1),
-            Expanded(
-              child: devices.isEmpty
-                  ? Center(
-                      child: Text(
-                          _isScanning ? 'Suche…' : 'Keine Geräte gefunden',
-                          style: TextStyle(color: hint)))
-                  : ListView(
-                      children: devices
-                          .map((r) => ListTile(
-                                leading: const Icon(Icons.sensors),
-                                title: Text(r.device.platformName),
-                                subtitle: Text(r.device.remoteId.str),
-                                trailing: Text('${r.rssi} dBm'),
-                                onTap: () {
-                                  Navigator.of(context).pop();
-                                  _connect(r.device);
-                                },
-                              ))
-                          .toList(),
-                    ),
             ),
           ],
         ),
@@ -901,7 +1058,7 @@ class _HomePageState extends State<HomePage> {
             icon: const Icon(Icons.arrow_back),
             onPressed: () => setState(() => _showSettings = false),
           ),
-          title: const Text('Einstellungen'),
+          title: Text('Einstellungen – $_title'),
           bottom: PreferredSize(
             preferredSize: const Size.fromHeight(30),
             child: _settingsStatusStrip(),
@@ -935,14 +1092,6 @@ class _HomePageState extends State<HomePage> {
               title: 'Log',
               child: _logBody(),
             ),
-            const SizedBox(height: 8),
-            Center(
-              child: Text(
-                'App-Version ${_appVersion ?? '–'}',
-                style: TextStyle(
-                    color: Theme.of(context).hintColor, fontSize: 12),
-              ),
-            ),
           ],
         ),
       ),
@@ -952,9 +1101,9 @@ class _HomePageState extends State<HomePage> {
   /// Schmale Leiste oben in den Einstellungen: Füllstand (% / L) + Empfang.
   Widget _settingsStatusStrip() {
     final cs = Theme.of(context).colorScheme;
-    final s = _status;
+    final s = c.status;
     String txt;
-    if (_bootloaderMode) {
+    if (c.bootloaderMode) {
       txt = 'Bootloader-Modus';
     } else if (s?.level != null) {
       final lvl = s!.level!;
@@ -1002,7 +1151,7 @@ class _HomePageState extends State<HomePage> {
 
   /// Empfangsqualität als 5-Balken-Symbol (+ optional dBm).
   Widget _signalIndicator({bool showDbm = true}) {
-    final rssi = _rssi;
+    final rssi = c.rssi;
     final lit = _signalLit(rssi);
     final color = lit >= 4
         ? const Color(0xFF43A047)
@@ -1023,14 +1172,22 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
+  bool _listEq(List<int> a, List<int> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
+  }
+
   Widget _levelCard() {
-    final s = _status;
+    final s = c.status;
     final level = (s?.level ?? 0).clamp(0.0, 100.0);
     final color = _levelColor(level.toDouble());
     final cs = Theme.of(context).colorScheme;
     final calibrated = s?.calibrated == true;
-    final tankform = _linCurve != null &&
-        !_listEq(_linCurve!, List.generate(11, (i) => i * 10));
+    final tankform = c.linCurve != null &&
+        !_listEq(c.linCurve!, List.generate(11, (i) => i * 10));
     return Card(
       color: cs.surfaceContainerHighest,
       child: Padding(
@@ -1047,7 +1204,7 @@ class _HomePageState extends State<HomePage> {
               ],
             ),
             Text(
-              s?.level != null ? '${s!.level!.toStringAsFixed(1)} %' : '– %',
+              s?.level != null ? '${s!.level!.toStringAsFixed(1)} %' : '– %',
               style: TextStyle(
                 fontSize: 52,
                 fontWeight: FontWeight.w700,
@@ -1103,17 +1260,17 @@ class _HomePageState extends State<HomePage> {
 
   /// Kleines Status-Symbol (aktiv = farbig, sonst ausgegraut).
   Widget _miniBadge(IconData icon, String label, bool active) {
-    final c = active
+    final col = active
         ? Theme.of(context).colorScheme.primary
         : Theme.of(context).disabledColor;
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Icon(icon, size: 16, color: c),
+        Icon(icon, size: 16, color: col),
         const SizedBox(width: 3),
         Text(label,
-            style:
-                TextStyle(fontSize: 11, color: c, fontWeight: FontWeight.w500)),
+            style: TextStyle(
+                fontSize: 11, color: col, fontWeight: FontWeight.w500)),
       ],
     );
   }
@@ -1166,7 +1323,8 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  Widget _fieldRow(TextEditingController ctrl, String label, VoidCallback onSend) {
+  Widget _fieldRow(
+      TextEditingController ctrl, String label, VoidCallback onSend) {
     return Padding(
       padding: const EdgeInsets.only(top: 8),
       child: Row(
@@ -1190,7 +1348,7 @@ class _HomePageState extends State<HomePage> {
   }
 
   Widget _calibBody() {
-    final calibrated = _status?.calibrated == true;
+    final calibrated = c.status?.calibrated == true;
     final okColor = const Color(0xFF43A047);
     final hint = Theme.of(context).hintColor;
     return Column(
@@ -1242,10 +1400,10 @@ class _HomePageState extends State<HomePage> {
   }
 
   Widget _tankFormBody() {
-    final cap = _status?.capacity;
+    final cap = c.status?.capacity;
     final cs = Theme.of(context).colorScheme;
     final identity = List.generate(11, (i) => i * 10);
-    final curve = _linCurve;
+    final curve = c.linCurve;
     final isCustom = curve != null && !_listEq(curve, identity);
     final statusText = curve == null
         ? 'unbekannt – auf „Auslesen" tippen'
@@ -1289,7 +1447,8 @@ class _HomePageState extends State<HomePage> {
           onPressed: () => _sendLin(List.generate(11, (i) => i * 10)),
         ),
         const SizedBox(height: 4),
-        const Text('setzt die Kennlinie auf linear – der Sensor zeigt dann die rohe Höhe',
+        const Text(
+            'setzt die Kennlinie auf linear – der Sensor zeigt dann die rohe Höhe',
             style: TextStyle(color: Colors.grey, fontSize: 11)),
         const SizedBox(height: 8),
         ...List.generate(11, (i) => _tankRow(i, cap)),
@@ -1337,7 +1496,8 @@ class _HomePageState extends State<HomePage> {
                 isDense: true,
                 hintText: '%',
                 border: OutlineInputBorder(),
-                contentPadding: EdgeInsets.symmetric(vertical: 10, horizontal: 4),
+                contentPadding:
+                    EdgeInsets.symmetric(vertical: 10, horizontal: 4),
               ),
             ),
           ),
@@ -1353,8 +1513,8 @@ class _HomePageState extends State<HomePage> {
 
   Widget _moduleBody() {
     final cs = Theme.of(context).colorScheme;
-    final fw = _status?.version;
-    final hw = _status?.hwRev;
+    final fw = c.status?.version;
+    final hw = c.status?.hwRev;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1375,7 +1535,7 @@ class _HomePageState extends State<HomePage> {
                 style: const TextStyle(fontWeight: FontWeight.w600)),
           ],
         ),
-        if (_updateAvailable) ...[
+        if (c.updateAvailable) ...[
           const SizedBox(height: 8),
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
@@ -1385,11 +1545,12 @@ class _HomePageState extends State<HomePage> {
             ),
             child: Row(
               children: [
-                Icon(Icons.system_update, size: 18, color: cs.onPrimaryContainer),
+                Icon(Icons.system_update,
+                    size: 18, color: cs.onPrimaryContainer),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    'Update verfügbar: V${_latestVersion ?? ''} '
+                    'Update verfügbar: V${c.latestVersion ?? ''} '
                     '– unten „Aus GitHub-Releases".',
                     style: TextStyle(
                         color: cs.onPrimaryContainer, fontSize: 13),
@@ -1406,12 +1567,12 @@ class _HomePageState extends State<HomePage> {
           'das Modul neu und die Verbindung trennt sich – danach neu verbinden.',
           style: TextStyle(color: Colors.grey, fontSize: 13),
         ),
-        if (_sensorName != null &&
-            _sensorName!.isNotEmpty &&
-            _sensorName != _deviceName) ...[
+        if (c.sensorName != null &&
+            c.sensorName!.isNotEmpty &&
+            c.sensorName != c.displayName) ...[
           const SizedBox(height: 6),
           Text(
-            'Hinweis: Bluetooth-Name („$_deviceName") weicht vom gespeicherten '
+            'Hinweis: Bluetooth-Name („${c.displayName}") weicht vom gespeicherten '
             'Namen ab (z. B. vom Plotter geändert). Einmal „Ändern" tippen, '
             'um beide anzugleichen.',
             style: TextStyle(
@@ -1424,6 +1585,7 @@ class _HomePageState extends State<HomePage> {
             Expanded(
               child: TextField(
                 controller: _nameCtrl,
+                focusNode: _nameFocus,
                 maxLength: 20,
                 decoration: const InputDecoration(
                   labelText: 'Sensorname',
@@ -1543,6 +1705,7 @@ class _HomePageState extends State<HomePage> {
     });
     try {
       final assets = await _fwRepo.fetchBinAssets();
+      widget.registry.fwAssets = assets; // für andere Seiten mitverwenden
       setState(() {
         _fwAssets = assets;
         _fwSel = assets.isNotEmpty ? assets.first : null;
@@ -1561,7 +1724,7 @@ class _HomePageState extends State<HomePage> {
 
   /// Gewählte Firmware herunterladen und das Update starten.
   Future<void> _updateFromGithub(FirmwareAsset a) async {
-    if (_device == null) return;
+    if (c.device == null) return;
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -1598,7 +1761,7 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _startFirmwareUpdate() async {
-    if (_device == null) return;
+    if (c.device == null) return;
     final result = await FilePicker.platform.pickFiles(
         withData: true, type: FileType.custom, allowedExtensions: const ['bin']);
     if (result == null || result.files.single.bytes == null) return;
@@ -1608,7 +1771,14 @@ class _HomePageState extends State<HomePage> {
 
   /// Gemeinsamer Update-Ablauf für lokale Datei und GitHub-Download.
   Future<void> _runFirmwareUpdate(Uint8List fw, String name) async {
-    if (_device == null) return;
+    if (c.device == null) return;
+
+    // Es darf nur EIN OTA-Update gleichzeitig laufen (Mehrsensor-Betrieb).
+    final activeDfu = widget.registry.dfuActive;
+    if (activeDfu != null && activeDfu != c) {
+      _snack('Es läuft bereits ein Firmware-Update auf einem anderen Sensor.');
+      return;
+    }
 
     // Plausibilitätsprüfung: falsche Dateien (z. B. die Bootloader-.bin oder
     // eine beliebige Fremddatei) gar nicht erst übertragen – der Bootloader
@@ -1691,11 +1861,13 @@ class _HomePageState extends State<HomePage> {
     );
 
     String? error;
+    widget.registry.dfuActive = c; // Auto-Reconnect + weitere OTAs sperren
+    c.dfuRunning = true;
     await _keepScreenOn(true); // Display während des Updates anlassen
     try {
       await DfuTransfer(
-        ble: _ble,
-        device: _device!,
+        ble: c.ble,
+        device: c.device!,
         firmware: fw,
         onProgress: (s, p) {
           status.value = s;
@@ -1707,6 +1879,8 @@ class _HomePageState extends State<HomePage> {
       error = '$e';
     } finally {
       await _keepScreenOn(false);
+      c.dfuRunning = false;
+      widget.registry.dfuActive = null;
     }
 
     if (mounted) Navigator.pop(context); // Fortschrittsdialog schließen
@@ -1714,10 +1888,11 @@ class _HomePageState extends State<HomePage> {
       showDialog(
         context: context,
         builder: (_) => AlertDialog(
-          title: Text(error == null ? 'Update erfolgreich' : 'Update fehlgeschlagen'),
+          title:
+              Text(error == null ? 'Update erfolgreich' : 'Update fehlgeschlagen'),
           content: Text(error == null
-              ? 'Die neue Firmware wurde übertragen. Der Sensor startet neu – '
-                  'bitte anschließend neu verbinden.'
+              ? 'Die neue Firmware wurde übertragen. Der Sensor startet neu '
+                  'und wird automatisch wieder verbunden.'
               : 'Fehler: $error\n\nDer Sensor bleibt im Bootloader (weißes '
                   'Blinken); das Update kann erneut gestartet werden.'),
           actions: [
@@ -1733,12 +1908,12 @@ class _HomePageState extends State<HomePage> {
   }
 
   Widget _logBody() {
-    if (_log.isEmpty) {
+    if (c.log.isEmpty) {
       return const Text('–', style: TextStyle(color: Colors.grey));
     }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
-      children: _log
+      children: c.log
           .take(12)
           .map((m) => Padding(
                 padding: const EdgeInsets.symmetric(vertical: 1),
