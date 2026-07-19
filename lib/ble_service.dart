@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io' show Platform;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
 /// Kapselt die BLE-Kommunikation mit dem Würth-Proteus-e-Modul
@@ -95,49 +96,81 @@ class ProteusBle {
     // die verschlüsselten Charakteristiken (typisch LINK_SUPERVISION_TIMEOUT),
     // liegt meist ein EINSEITIGER Bond vor: Android hält noch eine Kopplung,
     // das Modul hat seine nach Werksreset/PIN-Wechsel gelöscht. Dann verweigert
-    // das Modul die Verschlüsselung (mit dem alten Schlüssel), Android zeigt
-    // aber KEINEN Pairing-Dialog, weil es sich für gekoppelt hält. Deshalb den
-    // Android-Bond entfernen und im zweiten Anlauf frisch koppeln – jetzt kommt
-    // der PIN-Dialog.
+    // das Modul die Verschlüsselung, Android zeigt aber KEINEN Pairing-Dialog,
+    // weil es sich für gekoppelt hält. Deshalb den Android-Bond entfernen und
+    // im zweiten Anlauf frisch koppeln – dann kommt der PIN-Dialog.
     for (var attempt = 0; attempt < 2; attempt++) {
       await device.connect(timeout: const Duration(seconds: 15));
 
-      // Kopplung explizit anstoßen (nur Android; iOS koppelt beim ersten
-      // Zugriff selbst). 90 s, damit die PIN-Eingabe im System-Dialog nicht
-      // in einen Timeout läuft.
+      // createBond löst NUR dann echtes Pairing aus, wenn (noch) kein Bond
+      // besteht. Bei bestehendem Bond kehrt es sofort zurück (kein Dialog) –
+      // deshalb nur bei "not bonded" aufrufen. 90 s für die PIN-Eingabe.
       if (Platform.isAndroid) {
-        try {
-          await device.createBond(timeout: 90);
-        } catch (_) {
+        final bonded = await _isBonded(device);
+        debugPrint('[APP] connect attempt=$attempt bonded=$bonded');
+        if (!bonded) {
           try {
-            await device.disconnect();
-          } catch (_) {}
-          throw Exception('Kopplung fehlgeschlagen oder abgelehnt – '
-              'PIN prüfen (Werkseinstellung 123123)');
+            debugPrint('[APP] createBond -> Pairing-Dialog erwartet');
+            await device.createBond(timeout: 90);
+          } catch (e) {
+            debugPrint('[APP] createBond fehlgeschlagen: $e');
+            try {
+              await device.disconnect();
+            } catch (_) {}
+            throw Exception('Kopplung fehlgeschlagen oder abgelehnt – '
+                'PIN prüfen (Werkseinstellung 123123)');
+          }
         }
       }
 
       try {
         await _setup(device);
         _connectedController.add(true);
+        debugPrint('[APP] verbunden und eingerichtet');
         return; // erfolgreich verbunden und eingerichtet
-      } catch (_) {
+      } catch (e) {
+        debugPrint('[APP] setup fehlgeschlagen (attempt=$attempt): $e');
         try {
           await device.disconnect();
         } catch (_) {}
 
         if (Platform.isAndroid && attempt == 0) {
-          // veralteten Bond entfernen und einmal frisch neu koppeln
-          try {
-            await device.removeBond();
-          } catch (_) {}
-          await Future.delayed(const Duration(seconds: 2));
+          // veralteten Bond entfernen und dessen Verschwinden ABWARTEN,
+          // dann im zweiten Anlauf frisch koppeln.
+          await _clearBond(device);
           continue;
         }
-        throw Exception('Kopplung ungültig – bitte erneut verbinden '
-            '(koppelt neu, PIN Werkseinstellung 123123)');
+        throw Exception('Kopplung ungültig – bitte den Sensor in den '
+            'Bluetooth-Einstellungen des Handys entfernen und erneut '
+            'verbinden (PIN Werkseinstellung 123123)');
       }
     }
+  }
+
+  /// true, wenn Android das Gerät als gekoppelt (bonded) führt.
+  Future<bool> _isBonded(BluetoothDevice device) async {
+    try {
+      return (await device.bondState.first) == BluetoothBondState.bonded;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Android-Bond entfernen und auf Bestätigung (bondState == none) warten,
+  /// damit der folgende createBond-Aufruf wirklich neu koppelt.
+  Future<void> _clearBond(BluetoothDevice device) async {
+    if (!Platform.isAndroid) return;
+    try {
+      debugPrint('[APP] removeBond -> warte auf Bestätigung');
+      await device.removeBond();
+      await device.bondState
+          .firstWhere((s) => s == BluetoothBondState.none)
+          .timeout(const Duration(seconds: 6));
+      debugPrint('[APP] Bond entfernt');
+    } catch (e) {
+      debugPrint('[APP] removeBond ohne Bestätigung: $e');
+    }
+    await Future.delayed(const Duration(seconds: 1));
   }
 
   /// Große MTU anfordern, Charakteristiken suchen, Notifications aktivieren.
