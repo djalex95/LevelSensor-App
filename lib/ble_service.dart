@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io' show Platform;
 
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
@@ -59,11 +60,30 @@ class ProteusBle {
     });
 
     await device.connect(timeout: const Duration(seconds: 15));
+
+    // Kopplung explizit anstoßen, BEVOR auf die geschützten Charakteristiken
+    // zugegriffen wird (nur Android; iOS koppelt beim ersten Zugriff selbst).
+    // Großzügiges Timeout: hier tippt der Nutzer die 6-stellige PIN in den
+    // System-Dialog – die früheren 15-s-Timeouts der Charakteristik-Zugriffe
+    // haben den Dialog abgebrochen und neu geöffnet.
+    if (Platform.isAndroid) {
+      try {
+        await device.createBond(timeout: 90);
+      } catch (_) {
+        try {
+          await device.disconnect();
+        } catch (_) {}
+        throw Exception('Kopplung fehlgeschlagen oder abgelehnt – '
+            'PIN prüfen (Werkseinstellung 123123)');
+      }
+    }
+
     await _setup(device);
     _connectedController.add(true);
   }
 
   /// Große MTU anfordern, Charakteristiken suchen, Notifications aktivieren.
+  /// Timeouts großzügig: auf iOS kann hier noch das System-Pairing laufen.
   Future<void> _setup(BluetoothDevice device) async {
     try {
       await device.requestMtu(247); // längere Kommandos (LIN …); iOS: No-op
@@ -71,7 +91,7 @@ class ProteusBle {
 
     _rx = null;
     _tx = null;
-    final services = await device.discoverServices();
+    final services = await device.discoverServices(timeout: 30);
     for (final s in services) {
       if (s.uuid == serviceUuid) {
         for (final c in s.characteristics) {
@@ -87,7 +107,7 @@ class ProteusBle {
     }
 
     await _notifySub?.cancel();
-    await _tx!.setNotifyValue(true);
+    await _tx!.setNotifyValue(true, timeout: 60);
     _notifySub = _tx!.onValueReceived.listen(_onData);
   }
 

@@ -32,6 +32,13 @@ class SensorConnection extends ChangeNotifier {
   bool connected = false;
   bool connecting = false;
 
+  /// Frühestens dann wieder automatisch verbinden (Backoff nach Fehlschlag;
+  /// nach abgelehnter Kopplung länger, damit der Pairing-Dialog nicht im
+  /// Sekundentakt neu aufpoppt).
+  DateTime? _retryAfter;
+  bool get retryDue =>
+      _retryAfter == null || DateTime.now().isAfter(_retryAfter!);
+
   /// Während eines Firmware-Updates ruhen Auto-Reconnect und RSSI-Polling
   /// (der DFU-Transfer verwaltet die Verbindung selbst).
   bool dfuRunning = false;
@@ -66,6 +73,11 @@ class SensorConnection extends ChangeNotifier {
     try {
       final d = device ??= BluetoothDevice.fromId(id);
       await ble.connect(d);
+      _retryAfter = null;
+    } catch (e) {
+      _retryAfter = DateTime.now().add(
+          Duration(seconds: '$e'.contains('Kopplung') ? 30 : 10));
+      rethrow;
     } finally {
       connecting = false;
       notifyListeners();
@@ -291,7 +303,7 @@ class SensorRegistry extends ChangeNotifier {
     _reconnectTimer ??= Timer.periodic(const Duration(seconds: 5), (_) {
       if (dfuActive != null) return; // während OTA nichts anfassen
       for (final s in sensors) {
-        if (!s.connected && !s.connecting) {
+        if (!s.connected && !s.connecting && s.retryDue) {
           s.connect().catchError((_) {});
         }
       }
