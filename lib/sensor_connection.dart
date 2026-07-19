@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io' show Platform;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
@@ -39,6 +40,19 @@ class SensorConnection extends ChangeNotifier {
   bool get retryDue =>
       _retryAfter == null || DateTime.now().isAfter(_retryAfter!);
 
+  /// true, solange ein OS-autoConnect-Auftrag läuft (nur für gebondete
+  /// Sensoren). Das OS verbindet dann selbstständig – auch nach Abriss.
+  bool autoPending = false;
+  DateTime? _autoSince; // seit wann der Auftrag unverbunden wartet
+
+  /// autoConnect wartet ungewöhnlich lange -> Auftrag neu aufsetzen
+  /// (fängt z. B. modulseitig gelöschte Bonds ab).
+  bool get autoStale =>
+      autoPending &&
+      !connected &&
+      _autoSince != null &&
+      DateTime.now().difference(_autoSince!) > const Duration(seconds: 60);
+
   /// Während eines Firmware-Updates ruhen Auto-Reconnect und RSSI-Polling
   /// (der DFU-Transfer verwaltet die Verbindung selbst).
   bool dfuRunning = false;
@@ -63,16 +77,28 @@ class SensorConnection extends ChangeNotifier {
   StreamSubscription<bool>? _connSub;
   Timer? _rssiTimer;
 
-  /// Verbindet den Sensor (falls nicht schon verbunden). Direkter
-  /// Verbindungsversuch; die Grunddaten werden danach im connected-Listener
-  /// (_onConnected -> _queryBasics) abgefragt.
-  Future<void> connect() async {
+  /// Verbindet den Sensor (falls nicht schon verbunden).
+  ///
+  /// Ist der Sensor bereits gekoppelt (Android-Bond vorhanden), wird der
+  /// OS-autoConnect genutzt: schnellstmögliches, automatisches Verbinden,
+  /// ohne dass je ein Pairing-Dialog auftauchen kann. Ohne Kopplung (oder
+  /// bei [manual] = true) läuft der direkte Weg mit explizitem Pairing –
+  /// dort bleibt der System-PIN-Dialog dank 90-s-createBond stabil stehen.
+  Future<void> connect({bool manual = false}) async {
     if (connected || connecting || dfuRunning) return;
     connecting = true;
     notifyListeners();
     try {
       final d = device ??= BluetoothDevice.fromId(id);
-      await ble.connect(d);
+      bool auto = false;
+      if (!manual && Platform.isAndroid) {
+        try {
+          auto = (await d.bondState.first) == BluetoothBondState.bonded;
+        } catch (_) {/* Bond-Status unbekannt -> direkter Weg */}
+      }
+      await ble.connect(d, autoConnect: auto);
+      autoPending = auto;
+      if (auto) _autoSince = DateTime.now();
       _retryAfter = null;
     } catch (e) {
       _retryAfter = DateTime.now().add(
@@ -84,7 +110,22 @@ class SensorConnection extends ChangeNotifier {
     }
   }
 
-  Future<void> disconnect() => ble.disconnect();
+  Future<void> disconnect() {
+    autoPending = false;
+    _autoSince = null;
+    return ble.disconnect();
+  }
+
+  /// Verbindungsauftrag frisch aufsetzen (z. B. nach einem OTA, das den
+  /// autoConnect gekappt hat, oder wenn er ins Leere läuft). Erst trennen,
+  /// damit ein evtl. hängender OS-Auftrag sicher storniert ist.
+  void kickReconnect() {
+    autoPending = false;
+    _autoSince = null;
+    ble.disconnect().catchError((_) {}).whenComplete(() {
+      connect().catchError((_) {});
+    });
+  }
 
   /// Nach dem tatsächlichen Verbinden: Grunddaten abfragen
   /// (VER = Bootloader-Erkennung, LIN = Kennlinie, NAME = Sensorname).
@@ -125,9 +166,11 @@ class SensorConnection extends ChangeNotifier {
   void _onConnected(bool c) {
     connected = c;
     if (c) {
+      _autoSince = null;
       _startRssi();
       _queryBasics();
     } else {
+      if (autoPending) _autoSince = DateTime.now(); // OS verbindet weiter
       _stopRssi();
       rssi = null;
       updateChecked = false;
@@ -303,7 +346,11 @@ class SensorRegistry extends ChangeNotifier {
     _reconnectTimer ??= Timer.periodic(const Duration(seconds: 5), (_) {
       if (dfuActive != null) return; // während OTA nichts anfassen
       for (final s in sensors) {
-        if (!s.connected && !s.connecting && s.retryDue) {
+        if (s.connected || s.connecting) continue;
+        if (s.autoPending) {
+          // OS-autoConnect läuft; nur eingreifen, wenn er hängt
+          if (s.autoStale) s.kickReconnect();
+        } else if (s.retryDue) {
           s.connect().catchError((_) {});
         }
       }

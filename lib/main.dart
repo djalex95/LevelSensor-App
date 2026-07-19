@@ -281,7 +281,7 @@ class _DashboardPageState extends State<DashboardPage>
     final conn =
         _registry.addSensor(r.device.remoteId.str, r.device.platformName);
     if (mounted) Navigator.pop(context); // Sheet schließen
-    conn.connect().catchError((_) {});
+    conn.connect(manual: true).catchError((_) {}); // direkte Kopplung
   }
 
   // ---------------- Kachel-Menü (langer Druck) ----------------
@@ -302,7 +302,7 @@ class _DashboardPageState extends State<DashboardPage>
                 if (c.connected) {
                   c.disconnect();
                 } else {
-                  c.connect().catchError((_) {});
+                  c.connect(manual: true).catchError((_) {});
                 }
               },
             ),
@@ -1090,7 +1090,7 @@ class _SensorPageState extends State<SensorPage> {
               FilledButton.icon(
                 icon: const Icon(Icons.link),
                 label: const Text('Jetzt verbinden'),
-                onPressed: () => c.connect().catchError((_) {}),
+                onPressed: () => c.connect(manual: true).catchError((_) {}),
               ),
             ],
           ],
@@ -2004,6 +2004,9 @@ class _SensorPageState extends State<SensorPage> {
       await _keepScreenOn(false);
       c.dfuRunning = false;
       widget.registry.dfuActive = null;
+      // Der DFU hat die Verbindung selbst verwaltet -> Auftrag neu aufsetzen,
+      // damit der Sensor nach seinem Neustart automatisch wiederkommt.
+      c.kickReconnect();
     }
 
     if (mounted) Navigator.pop(context); // Fortschrittsdialog schließen

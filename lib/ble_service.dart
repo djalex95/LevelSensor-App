@@ -28,6 +28,8 @@ class ProteusBle {
   StreamSubscription<List<int>>? _notifySub;
   StreamSubscription<BluetoothConnectionState>? _stateSub;
   String _buffer = '';
+  bool _autoMode = false; // OS-autoConnect aktiv (nur für gebondete Geräte)
+  int _autoFails = 0;
 
   /// Stream vollständiger empfangener Textzeilen (ohne Zeilenende).
   Stream<String> get lines => _lineController.stream;
@@ -37,27 +39,57 @@ class ProteusBle {
 
   bool get isConnected => _rx != null && _tx != null;
 
-  /// Verbindet direkt mit [device] (mit Timeout), richtet MTU, Discovery und
-  /// Notifications ein und kehrt erst zurück, wenn verbindungsbereit.
+  /// Verbindet mit [device].
   ///
-  /// Bewusst KEIN OS-autoConnect: bei der PIN-gesicherten Verbindung würde ein
-  /// kurzer Abriss während des Pairing-Handshakes das OS sofort neu verbinden
-  /// lassen und den System-Pairing-Dialog abbrechen/neu öffnen. Ein einzelner
-  /// kontrollierter Verbindungsversuch ist mit Static-Passkey-Pairing stabil.
-  Future<void> connect(BluetoothDevice device) async {
+  /// [autoConnect] = true darf NUR für bereits gekoppelte (gebondete) Sensoren
+  /// verwendet werden: Das OS verbindet dann selbstständig, sobald der Sensor
+  /// erscheint, und die Verschlüsselung läuft stumm über die gespeicherten
+  /// Schlüssel – ein Pairing-Dialog kann nicht auftreten. Kehrt sofort zurück;
+  /// die Einrichtung passiert, wenn die Verbindung tatsächlich steht.
+  ///
+  /// [autoConnect] = false (Standard): direkter, kontrollierter Versuch mit
+  /// explizitem Pairing (createBond, 90 s für die PIN-Eingabe) – der einzige
+  /// Weg, auf dem der System-Pairing-Dialog stabil stehen bleibt.
+  Future<void> connect(BluetoothDevice device,
+      {bool autoConnect = false}) async {
     _device = device;
+    _autoMode = autoConnect;
+    _autoFails = 0;
 
     /* evtl. alte Subscriptions lösen (z. B. beim Neuverbinden im DFU) */
     await _stateSub?.cancel();
     await _notifySub?.cancel();
     _buffer = '';
 
-    _stateSub = device.connectionState.listen((state) {
-      if (state == BluetoothConnectionState.disconnected) {
+    _stateSub = device.connectionState.listen((state) async {
+      if (state == BluetoothConnectionState.connected) {
+        // Beim OS-autoConnect steht die Verbindung asynchron -> einrichten.
+        // Das Gerät ist gebondet, die Verschlüsselung braucht keinen Dialog.
+        if (_autoMode && !isConnected) {
+          try {
+            await _setup(device);
+            _autoFails = 0;
+            _connectedController.add(true);
+          } catch (_) {
+            // z. B. Bond modulseitig ungültig geworden: nach 2 Fehlversuchen
+            // den autoConnect stoppen, damit keine Endlosschleife entsteht –
+            // der nächste reguläre Versuch nimmt den Pairing-Weg.
+            if (++_autoFails >= 2) _autoMode = false;
+            try {
+              await device.disconnect();
+            } catch (_) {}
+          }
+        }
+      } else if (state == BluetoothConnectionState.disconnected) {
         _cleanup();
         _connectedController.add(false);
       }
     });
+
+    if (autoConnect) {
+      await device.connect(autoConnect: true, mtu: null);
+      return; // Einrichtung folgt im State-Listener, sobald verbunden
+    }
 
     await device.connect(timeout: const Duration(seconds: 15));
 
@@ -155,6 +187,7 @@ class ProteusBle {
   }
 
   Future<void> disconnect() async {
+    _autoMode = false; // laufenden OS-autoConnect-Auftrag beenden
     await _device?.disconnect();
     _cleanup();
   }
