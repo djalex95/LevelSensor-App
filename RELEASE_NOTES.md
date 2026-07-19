@@ -1,3 +1,17 @@
+## App 1.4.6
+
+- **Mehrsensor-Dashboard:** Mehrere Sensoren werden jetzt gleichzeitig
+  verbunden und als Kacheln angezeigt (Name, Füllstand, Liter, Temperatur,
+  Verbindungsstatus). Tippen öffnet die Detail-/Einstellungsansicht eines
+  Sensors; Sensoren lassen sich per „+" hinzufügen und per langem Druck
+  entfernen.
+- Der aktuelle Füllstand in Litern wird genauso prominent angezeigt wie die
+  Prozentanzeige; die Tankgröße bleibt klein daneben. Die App-Version steht
+  fest am unteren Bildschirmrand.
+- Schnelleres automatisches Wiederverbinden nach dem Öffnen der App.
+- Intern: Die Bluetooth-Verbindung nutzt kein erzwungenes Pairing mehr –
+  dadurch verbindet sich die App zuverlässig (passend zu Sensor-Firmware 1.2.7).
+
 ## App 1.4.5
 
 - Neu: Werksreset des Sensors (Einstellungen → Modul, mit Sicherheitsabfrage).
