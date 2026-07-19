@@ -85,18 +85,6 @@ bool? parseFactoryResetAck(String line) {
   return null;
 }
 
-/// Erkennt die Antwort auf das Kommando `PIN nnnnnn`:
-/// true = `OK PIN` (bei Änderung trennt der Sensor danach die Verbindung,
-/// alle Kopplungen werden gelöscht), false = `ERR PIN`, null = andere Zeile.
-bool? parsePinAck(String line) {
-  if (line.contains('OK PIN')) return true;
-  if (line.contains('ERR PIN')) return false;
-  return null;
-}
-
-/// Prüft eine Bluetooth-PIN: genau 6 Ziffern (BLE-Static-Passkey-Format).
-bool isValidBlePin(String pin) => RegExp(r'^[0-9]{6}$').hasMatch(pin);
-
 /// Fluidtyp-Codes nach NMEA2000.
 const Map<int, String> fluidNames = {
   0: 'Kraftstoff',

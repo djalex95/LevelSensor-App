@@ -33,28 +33,23 @@ class SensorConnection extends ChangeNotifier {
   bool connected = false;
   bool connecting = false;
 
-  /// Frühestens dann wieder automatisch verbinden (Backoff nach Fehlschlag;
-  /// nach abgelehnter Kopplung länger, damit der Pairing-Dialog nicht im
-  /// Sekundentakt neu aufpoppt).
+  /// Frühestens dann wieder automatisch verbinden (kurzer Backoff nach einem
+  /// fehlgeschlagenen Versuch, damit nicht im Sekundentakt neu verbunden wird).
   DateTime? _retryAfter;
   bool get retryDue =>
       _retryAfter == null || DateTime.now().isAfter(_retryAfter!);
 
   /// true, solange ein OS-autoConnect-Auftrag läuft. Das OS verbindet dann
-  /// selbstständig – auch nach Abriss.
+  /// selbstständig – auch nach Abriss (schnelleres Wiederverbinden).
   bool autoPending = false;
   DateTime? _autoSince; // seit wann der Auftrag unverbunden wartet
 
   /// In dieser App-Sitzung wurde schon mindestens einmal erfolgreich
-  /// verbunden. Erst dann ist der autoConnect sicher: Wir wissen, dass der
-  /// Bond auf BEIDEN Seiten gültig ist. Ein stehengebliebener Android-Bond
-  /// bei modulseitig gelöschter Kopplung (nach Werksreset/PIN-Wechsel) würde
-  /// sonst in den autoConnect laufen, wo der Pairing-Dialog nicht gehalten
-  /// werden kann und sofort wieder verschwindet.
+  /// verbunden. Erst dann wird der OS-autoConnect genutzt (der erste Versuch
+  /// läuft direkt, damit ein Verbindungsproblem sofort sichtbar wird).
   bool _proven = false;
 
-  /// autoConnect wartet ungewöhnlich lange -> Auftrag neu aufsetzen
-  /// (fängt z. B. modulseitig gelöschte Bonds ab).
+  /// autoConnect wartet ungewöhnlich lange -> Auftrag neu aufsetzen.
   bool get autoStale =>
       autoPending &&
       !connected &&
@@ -87,13 +82,10 @@ class SensorConnection extends ChangeNotifier {
 
   /// Verbindet den Sensor (falls nicht schon verbunden).
   ///
-  /// Der ERSTE Versuch je App-Sitzung (und jede manuelle Aktion) läuft über
-  /// den direkten, kontrollierten Weg mit explizitem Pairing: Der System-PIN-
-  /// Dialog bleibt dank 90-s-createBond stabil stehen, und eine kaputte
-  /// Kopplung (Android-Bond ohne passenden Modul-Bond) wird dabei repariert.
-  /// Erst NACH einer erfolgreichen Verbindung nutzen die folgenden
-  /// Wiederverbindungen den OS-autoConnect – dann ist der Bond nachweislich
-  /// beidseitig gültig und es kann kein Pairing-Dialog mehr auftreten.
+  /// Der ERSTE Versuch je App-Sitzung (und jede manuelle Aktion) läuft direkt,
+  /// damit ein Verbindungsproblem sofort sichtbar wird. Erst NACH einer
+  /// erfolgreichen Verbindung nutzen die folgenden Wiederverbindungen den
+  /// OS-autoConnect – das verbindet nach einem Abriss deutlich schneller.
   Future<void> connect({bool manual = false}) async {
     if (connected || connecting || dfuRunning) return;
     connecting = true;
@@ -106,8 +98,7 @@ class SensorConnection extends ChangeNotifier {
       if (auto) _autoSince = DateTime.now();
       _retryAfter = null;
     } catch (e) {
-      _retryAfter = DateTime.now().add(
-          Duration(seconds: '$e'.contains('Kopplung') ? 30 : 10));
+      _retryAfter = DateTime.now().add(const Duration(seconds: 8));
       rethrow;
     } finally {
       connecting = false;
@@ -171,7 +162,7 @@ class SensorConnection extends ChangeNotifier {
   void _onConnected(bool c) {
     connected = c;
     if (c) {
-      _proven = true; // Bond ist beidseitig gültig -> autoConnect jetzt sicher
+      _proven = true; // erste erfolgreiche Verbindung -> autoConnect jetzt nutzen
       _autoSince = null;
       _startRssi();
       _queryBasics();

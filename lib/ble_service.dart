@@ -1,8 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io' show Platform;
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
 /// Kapselt die BLE-Kommunikation mit dem Würth-Proteus-e-Modul
@@ -29,8 +27,7 @@ class ProteusBle {
   StreamSubscription<List<int>>? _notifySub;
   StreamSubscription<BluetoothConnectionState>? _stateSub;
   String _buffer = '';
-  bool _autoMode = false; // OS-autoConnect aktiv (nur für gebondete Geräte)
-  int _autoFails = 0;
+  bool _autoMode = false; // OS-autoConnect aktiv (schnelleres Wiederverbinden)
 
   /// Stream vollständiger empfangener Textzeilen (ohne Zeilenende).
   Stream<String> get lines => _lineController.stream;
@@ -40,22 +37,18 @@ class ProteusBle {
 
   bool get isConnected => _rx != null && _tx != null;
 
-  /// Verbindet mit [device].
+  /// Verbindet mit [device]. Die BLE-Schnittstelle ist unverschlüsselt/ohne
+  /// Pairing – es wird KEIN Bonding erzwungen (das schlug bei Geräten ohne
+  /// Sicherheit fehl). Nur verbinden, einrichten, Notifications aktivieren.
   ///
-  /// [autoConnect] = true darf NUR für bereits gekoppelte (gebondete) Sensoren
-  /// verwendet werden: Das OS verbindet dann selbstständig, sobald der Sensor
-  /// erscheint, und die Verschlüsselung läuft stumm über die gespeicherten
-  /// Schlüssel – ein Pairing-Dialog kann nicht auftreten. Kehrt sofort zurück;
-  /// die Einrichtung passiert, wenn die Verbindung tatsächlich steht.
-  ///
-  /// [autoConnect] = false (Standard): direkter, kontrollierter Versuch mit
-  /// explizitem Pairing (createBond, 90 s für die PIN-Eingabe) – der einzige
-  /// Weg, auf dem der System-Pairing-Dialog stabil stehen bleibt.
+  /// [autoConnect] = true: OS-gestützter autoConnect – kehrt sofort zurück,
+  /// das Betriebssystem verbindet, sobald der Sensor erscheint (schnelleres
+  /// Wiederverbinden). Einrichtung folgt im State-Listener.
+  /// [autoConnect] = false (Standard): direkter Versuch mit Timeout.
   Future<void> connect(BluetoothDevice device,
       {bool autoConnect = false}) async {
     _device = device;
     _autoMode = autoConnect;
-    _autoFails = 0;
 
     /* evtl. alte Subscriptions lösen (z. B. beim Neuverbinden im DFU) */
     await _stateSub?.cancel();
@@ -64,22 +57,12 @@ class ProteusBle {
 
     _stateSub = device.connectionState.listen((state) async {
       if (state == BluetoothConnectionState.connected) {
-        // Beim OS-autoConnect steht die Verbindung asynchron -> einrichten.
-        // Das Gerät ist gebondet, die Verschlüsselung braucht keinen Dialog.
+        // Beim OS-autoConnect steht die Verbindung asynchron -> hier einrichten.
         if (_autoMode && !isConnected) {
           try {
             await _setup(device);
-            _autoFails = 0;
             _connectedController.add(true);
-          } catch (_) {
-            // z. B. Bond modulseitig ungültig geworden: nach 2 Fehlversuchen
-            // den autoConnect stoppen, damit keine Endlosschleife entsteht –
-            // der nächste reguläre Versuch nimmt den Pairing-Weg.
-            if (++_autoFails >= 2) _autoMode = false;
-            try {
-              await device.disconnect();
-            } catch (_) {}
-          }
+          } catch (_) {/* Einrichtung fehlgeschlagen – OS versucht es erneut */}
         }
       } else if (state == BluetoothConnectionState.disconnected) {
         _cleanup();
@@ -92,89 +75,12 @@ class ProteusBle {
       return; // Einrichtung folgt im State-Listener, sobald verbunden
     }
 
-    // Direkter Weg: bis zu zwei Anläufe. Scheitert der erste am Zugriff auf
-    // die verschlüsselten Charakteristiken (typisch LINK_SUPERVISION_TIMEOUT),
-    // liegt meist ein EINSEITIGER Bond vor: Android hält noch eine Kopplung,
-    // das Modul hat seine nach Werksreset/PIN-Wechsel gelöscht. Dann verweigert
-    // das Modul die Verschlüsselung, Android zeigt aber KEINEN Pairing-Dialog,
-    // weil es sich für gekoppelt hält. Deshalb den Android-Bond entfernen und
-    // im zweiten Anlauf frisch koppeln – dann kommt der PIN-Dialog.
-    for (var attempt = 0; attempt < 2; attempt++) {
-      await device.connect(timeout: const Duration(seconds: 15));
-
-      // createBond löst NUR dann echtes Pairing aus, wenn (noch) kein Bond
-      // besteht. Bei bestehendem Bond kehrt es sofort zurück (kein Dialog) –
-      // deshalb nur bei "not bonded" aufrufen. 90 s für die PIN-Eingabe.
-      if (Platform.isAndroid) {
-        final bonded = await _isBonded(device);
-        debugPrint('[APP] connect attempt=$attempt bonded=$bonded');
-        if (!bonded) {
-          try {
-            debugPrint('[APP] createBond -> Pairing-Dialog erwartet');
-            await device.createBond(timeout: 90);
-          } catch (e) {
-            debugPrint('[APP] createBond fehlgeschlagen: $e');
-            try {
-              await device.disconnect();
-            } catch (_) {}
-            throw Exception('Kopplung fehlgeschlagen oder abgelehnt – '
-                'PIN prüfen (Werkseinstellung 123123)');
-          }
-        }
-      }
-
-      try {
-        await _setup(device);
-        _connectedController.add(true);
-        debugPrint('[APP] verbunden und eingerichtet');
-        return; // erfolgreich verbunden und eingerichtet
-      } catch (e) {
-        debugPrint('[APP] setup fehlgeschlagen (attempt=$attempt): $e');
-        try {
-          await device.disconnect();
-        } catch (_) {}
-
-        if (Platform.isAndroid && attempt == 0) {
-          // veralteten Bond entfernen und dessen Verschwinden ABWARTEN,
-          // dann im zweiten Anlauf frisch koppeln.
-          await _clearBond(device);
-          continue;
-        }
-        throw Exception('Kopplung ungültig – bitte den Sensor in den '
-            'Bluetooth-Einstellungen des Handys entfernen und erneut '
-            'verbinden (PIN Werkseinstellung 123123)');
-      }
-    }
-  }
-
-  /// true, wenn Android das Gerät als gekoppelt (bonded) führt.
-  Future<bool> _isBonded(BluetoothDevice device) async {
-    try {
-      return (await device.bondState.first) == BluetoothBondState.bonded;
-    } catch (_) {
-      return false;
-    }
-  }
-
-  /// Android-Bond entfernen und auf Bestätigung (bondState == none) warten,
-  /// damit der folgende createBond-Aufruf wirklich neu koppelt.
-  Future<void> _clearBond(BluetoothDevice device) async {
-    if (!Platform.isAndroid) return;
-    try {
-      debugPrint('[APP] removeBond -> warte auf Bestätigung');
-      await device.removeBond();
-      await device.bondState
-          .firstWhere((s) => s == BluetoothBondState.none)
-          .timeout(const Duration(seconds: 6));
-      debugPrint('[APP] Bond entfernt');
-    } catch (e) {
-      debugPrint('[APP] removeBond ohne Bestätigung: $e');
-    }
-    await Future.delayed(const Duration(seconds: 1));
+    await device.connect(timeout: const Duration(seconds: 15));
+    await _setup(device);
+    _connectedController.add(true);
   }
 
   /// Große MTU anfordern, Charakteristiken suchen, Notifications aktivieren.
-  /// Timeouts großzügig: auf iOS kann hier noch das System-Pairing laufen.
   Future<void> _setup(BluetoothDevice device) async {
     try {
       await device.requestMtu(247); // längere Kommandos (LIN …); iOS: No-op

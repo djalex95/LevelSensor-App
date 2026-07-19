@@ -281,7 +281,7 @@ class _DashboardPageState extends State<DashboardPage>
     final conn =
         _registry.addSensor(r.device.remoteId.str, r.device.platformName);
     if (mounted) Navigator.pop(context); // Sheet schließen
-    conn.connect(manual: true).catchError((_) {}); // direkte Kopplung
+    conn.connect(manual: true).catchError((_) {}); // direkter Verbindungsversuch
   }
 
   // ---------------- Kachel-Menü (langer Druck) ----------------
@@ -595,7 +595,6 @@ class _SensorPageState extends State<SensorPage> {
   final TextEditingController _capCtrl = TextEditingController();
   final TextEditingController _instCtrl = TextEditingController();
   final TextEditingController _nameCtrl = TextEditingController();
-  final TextEditingController _pinCtrl = TextEditingController();
   final FocusNode _nameFocus = FocusNode();
   String? _lastSensorName; // zuletzt ins Feld übernommener Name
 
@@ -656,7 +655,6 @@ class _SensorPageState extends State<SensorPage> {
     _capCtrl.dispose();
     _instCtrl.dispose();
     _nameCtrl.dispose();
-    _pinCtrl.dispose();
     _nameFocus.dispose();
     for (final ctrl in _heightCtrls) {
       ctrl.dispose();
@@ -691,70 +689,6 @@ class _SensorPageState extends State<SensorPage> {
     _send('NAME $name');
     _snack('Name gesendet. Das Modul startet neu – die Verbindung wird '
         'automatisch wiederhergestellt.');
-  }
-
-  /// Bluetooth-PIN ändern: Sicherheitsabfrage, dann `PIN nnnnnn` senden und
-  /// auf `OK PIN` warten. Bei Änderung trennt der Sensor die Verbindung,
-  /// löscht alle Kopplungen und verlangt beim nächsten Verbinden die neue PIN.
-  Future<void> _changePin() async {
-    final pin = _pinCtrl.text.trim();
-    if (!isValidBlePin(pin)) {
-      _snack('Die PIN muss aus genau 6 Ziffern bestehen.');
-      return;
-    }
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Bluetooth-PIN ändern?'),
-        content: Text(
-            'Die PIN wird auf „$pin" geändert.\n\n'
-            'Der Sensor trennt danach die Verbindung und löscht alle '
-            'bestehenden Kopplungen – jedes Handy muss sich mit der neuen '
-            'PIN neu koppeln.\n\n'
-            'Tipp: Falls die Neukopplung fehlschlägt, den Sensor in den '
-            'Bluetooth-Einstellungen des Handys einmal entfernen '
-            '(„Gerät ignorieren") und erneut verbinden.'),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('Abbrechen')),
-          FilledButton(
-              onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('PIN ändern')),
-        ],
-      ),
-    );
-    if (ok != true) return;
-
-    final completer = Completer<bool>();
-    final sub = c.ble.lines.listen((line) {
-      final ack = parsePinAck(line);
-      if (ack != null && !completer.isCompleted) completer.complete(ack);
-    });
-    c.addLog('> PIN ******');
-    try {
-      await c.ble.send('PIN $pin');
-    } catch (e) {
-      await sub.cancel();
-      _snack('Sendefehler: $e');
-      return;
-    }
-    bool? res;
-    try {
-      res = await completer.future.timeout(const Duration(seconds: 5));
-    } on TimeoutException {
-      res = null;
-    }
-    await sub.cancel();
-    if (!mounted) return;
-    if (res == true) {
-      _pinCtrl.clear();
-      _snack('PIN geändert – bitte mit der neuen PIN neu koppeln.');
-    } else if (res == false) {
-      _snack('PIN abgelehnt (genau 6 Ziffern erforderlich).');
-    } else {
-      _snack('Keine Bestätigung erhalten – Verbindung prüfen.');
-    }
   }
 
   /// Sicherheitsabfrage vor dem Werksreset (wie im PC-Tool).
@@ -1688,38 +1622,6 @@ class _SensorPageState extends State<SensorPage> {
             ),
             const SizedBox(width: 8),
             FilledButton(onPressed: _changeName, child: const Text('Ändern')),
-          ],
-        ),
-        const Divider(height: 24),
-        // --- Bluetooth-PIN ---
-        const Text('Bluetooth-PIN',
-            style: TextStyle(fontWeight: FontWeight.w600)),
-        const SizedBox(height: 4),
-        const Text(
-          'Schützt die Bluetooth-Verbindung: Beim ersten Koppeln fragt das '
-          'Handy nach der 6-stelligen PIN (Werkseinstellung 123123). Nach '
-          'einer Änderung müssen sich alle Geräte neu koppeln.',
-          style: TextStyle(color: Colors.grey, fontSize: 13),
-        ),
-        const SizedBox(height: 12),
-        Row(
-          children: [
-            Expanded(
-              child: TextField(
-                controller: _pinCtrl,
-                keyboardType: TextInputType.number,
-                maxLength: 6,
-                decoration: const InputDecoration(
-                  labelText: 'Neue PIN (6 Ziffern)',
-                  border: OutlineInputBorder(),
-                  isDense: true,
-                  counterText: '',
-                ),
-              ),
-            ),
-            const SizedBox(width: 8),
-            FilledButton(
-                onPressed: _changePin, child: const Text('PIN ändern')),
           ],
         ),
         const Divider(height: 24),
