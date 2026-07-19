@@ -32,11 +32,6 @@ class SensorConnection extends ChangeNotifier {
   bool connected = false;
   bool connecting = false;
 
-  /// true, sobald der OS-autoConnect für diesen Sensor beauftragt ist. Das
-  /// Betriebssystem verbindet dann selbstständig (auch nach einem Abriss),
-  /// bis [disconnect] gerufen wird – der Fallback-Timer muss nichts tun.
-  bool autoPending = false;
-
   /// Während eines Firmware-Updates ruhen Auto-Reconnect und RSSI-Polling
   /// (der DFU-Transfer verwaltet die Verbindung selbst).
   bool dfuRunning = false;
@@ -61,34 +56,23 @@ class SensorConnection extends ChangeNotifier {
   StreamSubscription<bool>? _connSub;
   Timer? _rssiTimer;
 
-  /// Verbindet den Sensor (falls nicht schon verbunden).
-  ///
-  /// [auto] = true (Standard): OS-gestützter autoConnect – kehrt sofort
-  /// zurück, das Betriebssystem verbindet, sobald der Sensor erscheint.
-  /// Die Grunddaten-Abfrage passiert dann im connected-Listener (_onConnected).
-  /// [auto] = false: direkter Verbindungsversuch (manueller Knopf) für eine
-  /// sofortige Rückmeldung.
-  Future<void> connect({bool auto = true}) async {
+  /// Verbindet den Sensor (falls nicht schon verbunden). Direkter
+  /// Verbindungsversuch; die Grunddaten werden danach im connected-Listener
+  /// (_onConnected -> _queryBasics) abgefragt.
+  Future<void> connect() async {
     if (connected || connecting || dfuRunning) return;
     connecting = true;
     notifyListeners();
     try {
       final d = device ??= BluetoothDevice.fromId(id);
-      await ble.connect(d, autoConnect: auto);
-      if (auto) autoPending = true; // OS übernimmt ab jetzt das Verbinden
-      // Grunddaten werden nach dem tatsächlichen Verbinden abgefragt
-      // (siehe _onConnected) – bei autoConnect steht die Verbindung erst
-      // asynchron.
+      await ble.connect(d);
     } finally {
       connecting = false;
       notifyListeners();
     }
   }
 
-  Future<void> disconnect() {
-    autoPending = false;
-    return ble.disconnect();
-  }
+  Future<void> disconnect() => ble.disconnect();
 
   /// Nach dem tatsächlichen Verbinden: Grunddaten abfragen
   /// (VER = Bootloader-Erkennung, LIN = Kennlinie, NAME = Sensorname).
@@ -295,19 +279,19 @@ class SensorRegistry extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Beim App-Start: für alle bekannten Sensoren den OS-autoConnect
-  /// beauftragen. Das Betriebssystem verbindet dann selbstständig, sobald
-  /// ein Sensor erscheint – auch nach einem Verbindungsabriss. Der Timer ist
-  /// nur ein seltener Fallback für Sensoren, bei denen der autoConnect-Auftrag
-  /// noch nicht platziert werden konnte (z. B. Bluetooth war noch aus).
+  /// Beim App-Start alle bekannten Sensoren verbinden und getrennte danach
+  /// zügig (alle 5 s) erneut versuchen. Ein laufender Versuch blockiert nicht
+  /// (connecting-Guard in connect()); zusammen mit dem aktiven Trennen beim
+  /// App-Schließen advertised der Sensor beim nächsten Öffnen schon wieder,
+  /// sodass der erste Versuch meist sofort greift.
   void start() {
     for (final s in sensors) {
       s.connect().catchError((_) {});
     }
-    _reconnectTimer ??= Timer.periodic(const Duration(seconds: 30), (_) {
+    _reconnectTimer ??= Timer.periodic(const Duration(seconds: 5), (_) {
       if (dfuActive != null) return; // während OTA nichts anfassen
       for (final s in sensors) {
-        if (!s.connected && !s.connecting && !s.autoPending) {
+        if (!s.connected && !s.connecting) {
           s.connect().catchError((_) {});
         }
       }
