@@ -210,6 +210,12 @@ class SensorConnection extends ChangeNotifier {
     final nm = parseName(line);
     if (nm != null) {
       sensorName = nm;
+      // Der gespeicherte Sensorname ist die einzige Quelle der Wahrheit:
+      // die Firmware haelt den BLE-Modulnamen damit synchron (Boot-Abgleich
+      // + sofortiges Umbenennen). Androids platformName kann nach einem
+      // Umbenennen noch den alten Namen aus dem Cache liefern - daher
+      // displayName hier nachziehen statt dem Cache zu glauben.
+      if (nm.isNotEmpty) displayName = nm;
       notifyListeners();
       return;
     }

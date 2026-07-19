@@ -1592,18 +1592,6 @@ class _SensorPageState extends State<SensorPage> {
           'das Modul neu und die Verbindung trennt sich – danach neu verbinden.',
           style: TextStyle(color: Colors.grey, fontSize: 13),
         ),
-        if (c.sensorName != null &&
-            c.sensorName!.isNotEmpty &&
-            c.sensorName != c.displayName) ...[
-          const SizedBox(height: 6),
-          Text(
-            'Hinweis: Bluetooth-Name („${c.displayName}") weicht vom gespeicherten '
-            'Namen ab (z. B. vom Plotter geändert). Einmal „Ändern" tippen, '
-            'um beide anzugleichen.',
-            style: TextStyle(
-                color: Theme.of(context).colorScheme.tertiary, fontSize: 12),
-          ),
-        ],
         const SizedBox(height: 12),
         Row(
           children: [
