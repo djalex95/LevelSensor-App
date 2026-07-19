@@ -91,44 +91,53 @@ class ProteusBle {
       return; // Einrichtung folgt im State-Listener, sobald verbunden
     }
 
-    await device.connect(timeout: const Duration(seconds: 15));
+    // Direkter Weg: bis zu zwei Anläufe. Scheitert der erste am Zugriff auf
+    // die verschlüsselten Charakteristiken (typisch LINK_SUPERVISION_TIMEOUT),
+    // liegt meist ein EINSEITIGER Bond vor: Android hält noch eine Kopplung,
+    // das Modul hat seine nach Werksreset/PIN-Wechsel gelöscht. Dann verweigert
+    // das Modul die Verschlüsselung (mit dem alten Schlüssel), Android zeigt
+    // aber KEINEN Pairing-Dialog, weil es sich für gekoppelt hält. Deshalb den
+    // Android-Bond entfernen und im zweiten Anlauf frisch koppeln – jetzt kommt
+    // der PIN-Dialog.
+    for (var attempt = 0; attempt < 2; attempt++) {
+      await device.connect(timeout: const Duration(seconds: 15));
 
-    // Kopplung explizit anstoßen, BEVOR auf die geschützten Charakteristiken
-    // zugegriffen wird (nur Android; iOS koppelt beim ersten Zugriff selbst).
-    // Großzügiges Timeout: hier tippt der Nutzer die 6-stellige PIN in den
-    // System-Dialog – die früheren 15-s-Timeouts der Charakteristik-Zugriffe
-    // haben den Dialog abgebrochen und neu geöffnet.
-    if (Platform.isAndroid) {
+      // Kopplung explizit anstoßen (nur Android; iOS koppelt beim ersten
+      // Zugriff selbst). 90 s, damit die PIN-Eingabe im System-Dialog nicht
+      // in einen Timeout läuft.
+      if (Platform.isAndroid) {
+        try {
+          await device.createBond(timeout: 90);
+        } catch (_) {
+          try {
+            await device.disconnect();
+          } catch (_) {}
+          throw Exception('Kopplung fehlgeschlagen oder abgelehnt – '
+              'PIN prüfen (Werkseinstellung 123123)');
+        }
+      }
+
       try {
-        await device.createBond(timeout: 90);
+        await _setup(device);
+        _connectedController.add(true);
+        return; // erfolgreich verbunden und eingerichtet
       } catch (_) {
         try {
           await device.disconnect();
         } catch (_) {}
-        throw Exception('Kopplung fehlgeschlagen oder abgelehnt – '
-            'PIN prüfen (Werkseinstellung 123123)');
-      }
-    }
 
-    try {
-      await _setup(device);
-    } catch (e) {
-      // Der Verschlüsselungs-/Zugriffsschritt ist gescheitert. Häufigste
-      // Ursache: einseitiger Bond – Android hält noch eine Kopplung, das
-      // Modul hat seine nach Werksreset/PIN-Wechsel gelöscht. Dann den
-      // Android-Bond entfernen, damit der nächste Versuch sauber neu koppelt.
-      if (Platform.isAndroid) {
-        try {
-          await device.removeBond();
-        } catch (_) {}
+        if (Platform.isAndroid && attempt == 0) {
+          // veralteten Bond entfernen und einmal frisch neu koppeln
+          try {
+            await device.removeBond();
+          } catch (_) {}
+          await Future.delayed(const Duration(seconds: 2));
+          continue;
+        }
+        throw Exception('Kopplung ungültig – bitte erneut verbinden '
+            '(koppelt neu, PIN Werkseinstellung 123123)');
       }
-      try {
-        await device.disconnect();
-      } catch (_) {}
-      throw Exception('Kopplung ungültig – bitte erneut verbinden '
-          '(koppelt neu, PIN Werkseinstellung 123123)');
     }
-    _connectedController.add(true);
   }
 
   /// Große MTU anfordern, Charakteristiken suchen, Notifications aktivieren.
