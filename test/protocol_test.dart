@@ -104,6 +104,39 @@ void main() {
     });
   });
 
+  group('parsePinAck', () {
+    test('OK -> true', () {
+      expect(parsePinAck('OK PIN'), isTrue);
+    });
+
+    test('ERR -> false', () {
+      expect(parsePinAck('ERR PIN'), isFalse);
+    });
+
+    test('andere Zeilen -> null', () {
+      expect(parsePinAck('STAT;L=1'), isNull);
+      expect(parsePinAck('OK NAME'), isNull);
+    });
+  });
+
+  group('isValidBlePin', () {
+    test('6 Ziffern gültig', () {
+      expect(isValidBlePin('123123'), isTrue);
+      expect(isValidBlePin('000000'), isTrue);
+    });
+
+    test('falsche Länge ungültig', () {
+      expect(isValidBlePin('12345'), isFalse);
+      expect(isValidBlePin('1234567'), isFalse);
+      expect(isValidBlePin(''), isFalse);
+    });
+
+    test('Nicht-Ziffern ungültig', () {
+      expect(isValidBlePin('12a456'), isFalse);
+      expect(isValidBlePin('1234 6'), isFalse);
+    });
+  });
+
   group('buildLinCommand', () {
     test('gültige Tabelle', () {
       expect(buildLinCommand([0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]),
