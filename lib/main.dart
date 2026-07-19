@@ -54,7 +54,8 @@ class DashboardPage extends StatefulWidget {
   State<DashboardPage> createState() => _DashboardPageState();
 }
 
-class _DashboardPageState extends State<DashboardPage> {
+class _DashboardPageState extends State<DashboardPage>
+    with WidgetsBindingObserver {
   final SensorRegistry _registry = SensorRegistry();
   String? _appVersion;
 
@@ -65,8 +66,20 @@ class _DashboardPageState extends State<DashboardPage> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _registry.addListener(_onChange);
     _init();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Wird die App beendet (nicht nur in den Hintergrund geschoben), die
+    // Verbindungen aktiv trennen. So gibt der Sensor die Verbindung sofort
+    // frei und advertised beim nächsten Öffnen bereits wieder – das
+    // Wiederverbinden ist dann spürbar schneller.
+    if (state == AppLifecycleState.detached) {
+      _registry.disconnectAll();
+    }
   }
 
   void _onChange() {
@@ -83,6 +96,7 @@ class _DashboardPageState extends State<DashboardPage> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _registry.removeListener(_onChange);
     _registry.dispose();
     super.dispose();

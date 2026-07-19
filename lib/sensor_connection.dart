@@ -32,6 +32,11 @@ class SensorConnection extends ChangeNotifier {
   bool connected = false;
   bool connecting = false;
 
+  /// true, sobald der OS-autoConnect für diesen Sensor beauftragt ist. Das
+  /// Betriebssystem verbindet dann selbstständig (auch nach einem Abriss),
+  /// bis [disconnect] gerufen wird – der Fallback-Timer muss nichts tun.
+  bool autoPending = false;
+
   /// Während eines Firmware-Updates ruhen Auto-Reconnect und RSSI-Polling
   /// (der DFU-Transfer verwaltet die Verbindung selbst).
   bool dfuRunning = false;
@@ -56,30 +61,51 @@ class SensorConnection extends ChangeNotifier {
   StreamSubscription<bool>? _connSub;
   Timer? _rssiTimer;
 
-  /// Verbindet den Sensor (falls nicht schon verbunden) und fragt die
-  /// Grunddaten ab (VER = Bootloader-Erkennung, LIN, NAME).
-  Future<void> connect() async {
+  /// Verbindet den Sensor (falls nicht schon verbunden).
+  ///
+  /// [auto] = true (Standard): OS-gestützter autoConnect – kehrt sofort
+  /// zurück, das Betriebssystem verbindet, sobald der Sensor erscheint.
+  /// Die Grunddaten-Abfrage passiert dann im connected-Listener (_onConnected).
+  /// [auto] = false: direkter Verbindungsversuch (manueller Knopf) für eine
+  /// sofortige Rückmeldung.
+  Future<void> connect({bool auto = true}) async {
     if (connected || connecting || dfuRunning) return;
     connecting = true;
     notifyListeners();
     try {
       final d = device ??= BluetoothDevice.fromId(id);
-      await ble.connect(d);
-      final pn = d.platformName;
-      if (pn.isNotEmpty && pn != displayName) displayName = pn;
-      addLog('Verbunden mit $displayName');
-      try {
-        await ble.send('VER');
-        await ble.send('LIN');
-        await ble.send('NAME');
-      } catch (_) {}
+      await ble.connect(d, autoConnect: auto);
+      if (auto) autoPending = true; // OS übernimmt ab jetzt das Verbinden
+      // Grunddaten werden nach dem tatsächlichen Verbinden abgefragt
+      // (siehe _onConnected) – bei autoConnect steht die Verbindung erst
+      // asynchron.
     } finally {
       connecting = false;
       notifyListeners();
     }
   }
 
-  Future<void> disconnect() => ble.disconnect();
+  Future<void> disconnect() {
+    autoPending = false;
+    return ble.disconnect();
+  }
+
+  /// Nach dem tatsächlichen Verbinden: Grunddaten abfragen
+  /// (VER = Bootloader-Erkennung, LIN = Kennlinie, NAME = Sensorname).
+  Future<void> _queryBasics() async {
+    if (dfuRunning) return; // während OTA keine Kommandos einstreuen
+    final d = device;
+    if (d != null) {
+      final pn = d.platformName;
+      if (pn.isNotEmpty && pn != displayName) displayName = pn;
+    }
+    addLog('Verbunden mit $displayName');
+    try {
+      await ble.send('VER');
+      await ble.send('LIN');
+      await ble.send('NAME');
+    } catch (_) {}
+  }
 
   /// Kommando senden und im Log vermerken. Wirft bei Sendefehler.
   Future<void> send(String cmd) async {
@@ -104,6 +130,7 @@ class SensorConnection extends ChangeNotifier {
     connected = c;
     if (c) {
       _startRssi();
+      _queryBasics();
     } else {
       _stopRssi();
       rssi = null;
@@ -268,20 +295,30 @@ class SensorRegistry extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Beim App-Start: alle bekannten Sensoren verbinden und danach alle 20 s
-  /// getrennte Sensoren still erneut versuchen.
+  /// Beim App-Start: für alle bekannten Sensoren den OS-autoConnect
+  /// beauftragen. Das Betriebssystem verbindet dann selbstständig, sobald
+  /// ein Sensor erscheint – auch nach einem Verbindungsabriss. Der Timer ist
+  /// nur ein seltener Fallback für Sensoren, bei denen der autoConnect-Auftrag
+  /// noch nicht platziert werden konnte (z. B. Bluetooth war noch aus).
   void start() {
     for (final s in sensors) {
       s.connect().catchError((_) {});
     }
-    _reconnectTimer ??= Timer.periodic(const Duration(seconds: 20), (_) {
+    _reconnectTimer ??= Timer.periodic(const Duration(seconds: 30), (_) {
       if (dfuActive != null) return; // während OTA nichts anfassen
       for (final s in sensors) {
-        if (!s.connected && !s.connecting) {
+        if (!s.connected && !s.connecting && !s.autoPending) {
           s.connect().catchError((_) {});
         }
       }
     });
+  }
+
+  /// Alle Verbindungen aktiv trennen (beim Beenden der App).
+  void disconnectAll() {
+    for (final s in sensors) {
+      s.disconnect().catchError((_) {});
+    }
   }
 
   Future<void> _checkFirmwareUpdate(SensorConnection conn) async {
