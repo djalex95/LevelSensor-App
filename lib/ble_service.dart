@@ -110,7 +110,24 @@ class ProteusBle {
       }
     }
 
-    await _setup(device);
+    try {
+      await _setup(device);
+    } catch (e) {
+      // Der Verschlüsselungs-/Zugriffsschritt ist gescheitert. Häufigste
+      // Ursache: einseitiger Bond – Android hält noch eine Kopplung, das
+      // Modul hat seine nach Werksreset/PIN-Wechsel gelöscht. Dann den
+      // Android-Bond entfernen, damit der nächste Versuch sauber neu koppelt.
+      if (Platform.isAndroid) {
+        try {
+          await device.removeBond();
+        } catch (_) {}
+      }
+      try {
+        await device.disconnect();
+      } catch (_) {}
+      throw Exception('Kopplung ungültig – bitte erneut verbinden '
+          '(koppelt neu, PIN Werkseinstellung 123123)');
+    }
     _connectedController.add(true);
   }
 
