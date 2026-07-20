@@ -746,6 +746,12 @@ class _SensorPageState extends State<SensorPage> {
     await sub.cancel();
     if (!mounted) return;
     if (ok == true) {
+      // Der gespeicherte Name ist jetzt weg; der Sensor advertised nach dem
+      // Neustart wieder als "LevelSense-<UID>". Alten Namen verwerfen und
+      // per kurzem Scan den frischen Bluetooth-Namen übernehmen (Androids
+      // Namens-Cache liefert sonst noch den alten).
+      c.sensorName = null;
+      widget.registry.refreshNamesFromScan();
       _snack('Werksreset ausgeführt – der Sensor startet neu.');
       Navigator.of(context).popUntil((r) => r.isFirst); // zum Dashboard
     } else if (ok == false) {

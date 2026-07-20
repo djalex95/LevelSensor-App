@@ -256,8 +256,45 @@ class SensorConnection extends ChangeNotifier {
 /// Verwaltet die bekannten Sensoren: Persistenz (SharedPreferences),
 /// gleichzeitige Verbindungen und periodisches Wiederverbinden.
 class SensorRegistry extends ChangeNotifier {
+  SensorRegistry() {
+    // Frische Advertisements sind die verlässlichste Namensquelle: Androids
+    // platformName-Cache liefert nach einem Umbenennen/Werksreset oft noch
+    // den alten Namen. Läuft irgendwo ein Scan (Sensor-hinzufügen-Dialog
+    // oder refreshNamesFromScan), ziehen bekannte Sensoren ohne
+    // gespeicherten Namen ihren Anzeigenamen hier automatisch nach.
+    _scanSub = FlutterBluePlus.scanResults.listen((results) {
+      var changed = false;
+      for (final r in results) {
+        final s = byId(r.device.remoteId.str);
+        if (s == null) continue;
+        final adv = r.advertisementData.advName;
+        if (adv.isEmpty || adv == s.displayName) continue;
+        if (s.sensorName != null && s.sensorName!.isNotEmpty) {
+          continue; // gespeicherter Name ist die Wahrheit (NAME-Abfrage)
+        }
+        s.displayName = adv;
+        changed = true;
+      }
+      if (changed) {
+        save();
+        notifyListeners();
+      }
+    });
+  }
+
   final List<SensorConnection> sensors = [];
   Timer? _reconnectTimer;
+  StreamSubscription<List<ScanResult>>? _scanSub;
+
+  /// Kurzen Scan starten, um Anzeigenamen bekannter Sensoren aufzufrischen
+  /// (z. B. nach einem Werksreset: der Sensor advertised wieder als
+  /// "LevelSense-<UID>"). Die Übernahme erledigt der scanResults-Listener.
+  Future<void> refreshNamesFromScan() async {
+    if (FlutterBluePlus.isScanningNow) return;
+    try {
+      await FlutterBluePlus.startScan(timeout: const Duration(seconds: 8));
+    } catch (_) {/* z. B. Bluetooth aus – dann eben beim nächsten Scan */}
+  }
 
   /// Sensor, auf dem gerade ein Firmware-Update läuft (global max. eines –
   /// zwei parallele OTA-Transfers will man nicht).
@@ -381,6 +418,7 @@ class SensorRegistry extends ChangeNotifier {
   @override
   void dispose() {
     _reconnectTimer?.cancel();
+    _scanSub?.cancel();
     for (final s in sensors) {
       s.removeListener(notifyListeners);
       s.dispose();
