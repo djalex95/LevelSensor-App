@@ -1,3 +1,15 @@
+## App 1.4.7
+
+- Nach einem Werksreset zeigt die App den Sensor automatisch wieder mit
+  seinem Standardnamen („LevelSense-…") an – Entfernen und Neu-Hinzufügen
+  ist nicht mehr nötig. Anzeigenamen bekannter Sensoren werden bei jedem
+  Scan aus frischen Bluetooth-Advertisements aktualisiert.
+- Irreführender Hinweis „Bluetooth-Name weicht ab" nach dem Umbenennen
+  entfernt: Der im Sensor gespeicherte Name ist die einzige Quelle der
+  Wahrheit, die Anzeige folgt ihm jetzt direkt (der Namens-Cache des
+  Systems lieferte nach dem Umbenennen oft noch den alten Namen).
+- Passend zu Sensor-Firmware 1.2.8 (Namensstand sofort auf dem NMEA-Bus).
+
 ## App 1.4.6
 
 - **Mehrsensor-Dashboard:** Mehrere Sensoren werden jetzt gleichzeitig
