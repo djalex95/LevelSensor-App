@@ -11,6 +11,10 @@ class SensorStatus {
   final bool? calibrated; // 100%-Kalibrierung vorhanden
   final String? version; // Firmware-Version, z. B. "1.2.0"
   final int? hwRev; // Hardware-Revision, z. B. 1000
+  final int? hwVariant; // Hardware-Variante (Messprinzip): 1000=Druck V1,
+  // 1001=Druck V2, 1002=Ultraschall. Grundlage für die passende
+  // Firmware-Auswahl beim Update (Cross-Flash-Schutz). null = altes STAT
+  // ohne HWV-Feld.
 
   const SensorStatus({
     this.level,
@@ -21,11 +25,13 @@ class SensorStatus {
     this.calibrated,
     this.version,
     this.hwRev,
+    this.hwVariant,
   });
 
-  /// Parst `STAT;L=73.5;T=23.45;F=1;C=150;I=0;CAL=1;V=1.2.3-dev;HW=1000`.
+  /// Parst `STAT;L=73.5;T=23.45;F=1;C=150;I=0;CAL=1;V=1.2.3-dev;HW=1000;HWV=1000`.
   /// Zerlegt die Zeile ab `STAT` an `;` in `Schlüssel=Wert`-Paare, sodass auch
   /// nicht-numerische Werte (z. B. `V=1.2.3-dev`) vollständig erhalten bleiben.
+  /// Unbekannte/fehlende Felder werden toleriert (Vorwärts-/Rückwärtskompat.).
   static SensorStatus? parse(String line) {
     final start = line.indexOf('STAT');
     if (start < 0) return null;
@@ -47,6 +53,7 @@ class SensorStatus {
       calibrated: map['CAL'] == '1',
       version: map['V'],
       hwRev: int.tryParse(map['HW'] ?? ''),
+      hwVariant: int.tryParse(map['HWV'] ?? ''),
     );
   }
 }
