@@ -59,6 +59,11 @@ class _DashboardPageState extends State<DashboardPage>
   final SensorRegistry _registry = SensorRegistry();
   String? _appVersion;
 
+  // Nach diesem Hintergrund-Verzug werden die Sensoren freigegeben, damit ein
+  // im Hintergrund liegendes Handy den Sensor nicht dauerhaft belegt.
+  static const _bgReleaseDelay = Duration(seconds: 15);
+  Timer? _bgTimer;
+
   // App-eigene Updates (APK) aus dem App-Repo.
   static const _appRepo = GithubAppUpdate('djalex95', 'LevelSensor-App');
   static const MethodChannel _installerChannel = MethodChannel('app/installer');
@@ -73,12 +78,33 @@ class _DashboardPageState extends State<DashboardPage>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    // Wird die App beendet (nicht nur in den Hintergrund geschoben), die
-    // Verbindungen aktiv trennen. So gibt der Sensor die Verbindung sofort
-    // frei und advertised beim nächsten Öffnen bereits wieder – das
-    // Wiederverbinden ist dann spürbar schneller.
-    if (state == AppLifecycleState.detached) {
-      _registry.disconnectAll();
+    switch (state) {
+      case AppLifecycleState.resumed:
+        // Wieder im Vordergrund: geplante Freigabe abbrechen und – falls die
+        // Sensoren im Hintergrund schon freigegeben wurden – sofort wieder
+        // verbinden.
+        _bgTimer?.cancel();
+        _bgTimer = null;
+        _registry.resume();
+        break;
+      case AppLifecycleState.inactive:
+      case AppLifecycleState.hidden:
+      case AppLifecycleState.paused:
+        // In den Hintergrund geschoben: nicht sofort trennen (kurzes Wegtippen
+        // soll die Verbindung nicht kosten), sondern erst nach kurzer Zeit die
+        // Sensoren freigeben – so blockiert dieses Handy den nur einzeln
+        // koppelbaren Sensor nicht für andere.
+        _bgTimer ??= Timer(_bgReleaseDelay, () {
+          _bgTimer = null;
+          _registry.suspend();
+        });
+        break;
+      case AppLifecycleState.detached:
+        // App wird beendet: sofort alle Verbindungen freigeben.
+        _bgTimer?.cancel();
+        _bgTimer = null;
+        _registry.disconnectAll();
+        break;
     }
   }
 
@@ -96,6 +122,7 @@ class _DashboardPageState extends State<DashboardPage>
 
   @override
   void dispose() {
+    _bgTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     _registry.removeListener(_onChange);
     _registry.dispose();

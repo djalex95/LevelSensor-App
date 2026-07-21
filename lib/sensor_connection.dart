@@ -286,6 +286,12 @@ class SensorRegistry extends ChangeNotifier {
   Timer? _reconnectTimer;
   StreamSubscription<List<ScanResult>>? _scanSub;
 
+  /// true, während die App im Hintergrund ist und die Sensoren bewusst
+  /// freigegeben wurden (siehe suspend()). Unterdrückt den Auto-Reconnect,
+  /// damit ein Handy den einzeln koppelbaren Sensor nicht blockiert.
+  bool _suspended = false;
+  bool get suspended => _suspended;
+
   /// Kurzen Scan starten, um Anzeigenamen bekannter Sensoren aufzufrischen
   /// (z. B. nach einem Werksreset: der Sensor advertised wieder als
   /// "LevelSense-<UID>"). Die Übernahme erledigt der scanResults-Listener.
@@ -384,6 +390,7 @@ class SensorRegistry extends ChangeNotifier {
       s.connect().catchError((_) {});
     }
     _reconnectTimer ??= Timer.periodic(const Duration(seconds: 5), (_) {
+      if (_suspended) return; // App im Hintergrund -> Sensor bewusst freigeben
       if (dfuActive != null) return; // während OTA nichts anfassen
       for (final s in sensors) {
         if (s.connected || s.connecting) continue;
@@ -402,6 +409,30 @@ class SensorRegistry extends ChangeNotifier {
     for (final s in sensors) {
       s.disconnect().catchError((_) {});
     }
+  }
+
+  /// App ist (länger) im Hintergrund: Sensoren freigeben, damit sie nicht von
+  /// diesem Handy blockiert werden (der Proteus lässt nur EINE Verbindung zu).
+  /// Der Auto-Reconnect pausiert, bis resume() aufgerufen wird. Ein laufendes
+  /// OTA wird nicht unterbrochen.
+  void suspend() {
+    if (_suspended || dfuActive != null) return;
+    _suspended = true;
+    for (final s in sensors) {
+      s.disconnect().catchError((_) {});
+    }
+    notifyListeners();
+  }
+
+  /// App ist wieder im Vordergrund: Auto-Reconnect fortsetzen und bekannte
+  /// Sensoren sofort neu verbinden (statt bis zum nächsten Timer-Tick zu warten).
+  void resume() {
+    if (!_suspended) return;
+    _suspended = false;
+    for (final s in sensors) {
+      s.connect().catchError((_) {});
+    }
+    notifyListeners();
   }
 
   Future<void> _checkFirmwareUpdate(SensorConnection conn) async {
