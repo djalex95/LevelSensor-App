@@ -938,6 +938,262 @@ class _SensorPageState extends State<SensorPage> {
     );
   }
 
+  // ---------------- Sicherung der Konfiguration ----------------
+
+  /// Abschnitt „Sicherung": komplette Konfiguration in eine Datei schreiben
+  /// oder aus einer Datei zurückspielen (z. B. nach einem Gerätetausch).
+  Widget _backupBody() {
+    final cs = Theme.of(context).colorScheme;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Sichert Kalibrierung, Tankform, Fluidtyp, Kapazität, Instanz und '
+          'Name in eine Datei. Die NMEA2000-Adresse gehört bewusst nicht dazu '
+          '– sie wird am Bus ohnehin neu vergeben.',
+          style: TextStyle(fontSize: 12, color: Theme.of(context).hintColor),
+        ),
+        const SizedBox(height: 10),
+        Row(
+          children: [
+            Expanded(
+              child: FilledButton.icon(
+                icon: const Icon(Icons.save_alt, size: 18),
+                label: const Text('Sichern'),
+                onPressed: c.connected ? _saveBackup : null,
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: OutlinedButton.icon(
+                icon: const Icon(Icons.restore, size: 18),
+                label: const Text('Einspielen'),
+                onPressed: c.connected ? _restoreBackup : null,
+              ),
+            ),
+          ],
+        ),
+        if (!c.connected) ...[
+          const SizedBox(height: 8),
+          Text('Dazu muss der Sensor verbunden sein.',
+              style: TextStyle(fontSize: 12, color: cs.error)),
+        ],
+      ],
+    );
+  }
+
+  /// Alle Werte vom Sensor holen und als JSON-Datei ablegen.
+  Future<void> _saveBackup() async {
+    final st = c.status;
+    if (st == null) {
+      _snack('Noch keine Sensordaten empfangen.');
+      return;
+    }
+
+    // Kennlinie sicherheitshalber neu anfordern, falls sie noch fehlt.
+    if (c.linCurve == null) {
+      try {
+        await c.send('LIN');
+        await Future<void>.delayed(const Duration(milliseconds: 600));
+      } catch (_) {}
+    }
+
+    final cal = await c.requestCal();
+    if (cal == null) {
+      _snack('Der Sensor meldet keinen Kalibrierwert – '
+          'Firmware 1.2.9 oder neuer nötig.');
+      return;
+    }
+
+    final backup = SensorBackup(
+      created: DateTime.now(),
+      sourceName: c.sensorName?.isNotEmpty == true
+          ? c.sensorName
+          : c.displayName,
+      firmware: st.version,
+      hwRev: st.hwRev,
+      hwVariant: st.hwVariant,
+      calibrated: cal.calibrated,
+      calValue: cal.maxVal,
+      fluidType: st.fluidType,
+      capacity: st.capacity,
+      instance: st.instance,
+      name: c.sensorName,
+      curve: c.linCurve,
+    );
+
+    // Eingerückt schreiben, damit die Datei von Hand lesbar und korrigierbar
+    // bleibt – das ist der Sinn des JSON-Formats gegenüber einem Rohabbild.
+    final text = const JsonEncoder.withIndent('  ').convert(backup.toJson());
+    final stamp = backup.created
+        .toIso8601String()
+        .substring(0, 16)
+        .replaceAll(RegExp(r'[:\-]'), '')
+        .replaceAll('T', '_');
+    final safeName = (backup.sourceName ?? 'sensor')
+        .replaceAll(RegExp(r'[^A-Za-z0-9_\-]'), '_');
+
+    try {
+      final path = await FilePicker.platform.saveFile(
+        dialogTitle: 'Sicherung speichern',
+        fileName: 'backup_${safeName}_$stamp.json',
+        bytes: Uint8List.fromList(utf8.encode(text)),
+        type: FileType.custom,
+        allowedExtensions: const ['json'],
+      );
+      if (path != null) _snack('Gesichert: ${path.split('/').last}');
+    } catch (e) {
+      _snack('Sicherung fehlgeschlagen: $e');
+    }
+  }
+
+  /// Sicherungsdatei wählen, Inhalt zeigen und nach Bestätigung schreiben.
+  Future<void> _restoreBackup() async {
+    SensorBackup backup;
+    try {
+      final res = await FilePicker.platform.pickFiles(
+          withData: true,
+          type: FileType.custom,
+          allowedExtensions: const ['json']);
+      if (res == null || res.files.single.bytes == null) return;
+      final map =
+          jsonDecode(utf8.decode(res.files.single.bytes!)) as Map<String, dynamic>;
+      backup = SensorBackup.fromJson(map);
+    } on FormatException catch (e) {
+      _snack(e.message);
+      return;
+    } catch (e) {
+      _snack('Datei konnte nicht gelesen werden: $e');
+      return;
+    }
+
+    if (!mounted) return;
+
+    // Warnung, wenn die Sicherung von einem anderen Messprinzip stammt: ein
+    // Druck-Kalibrierwert ergibt auf einem Ultraschallsensor keinen Sinn.
+    final target = c.status?.hwVariant;
+    final mismatch = backup.hwVariant != null &&
+        target != null &&
+        backup.hwVariant != target;
+
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dctx) => AlertDialog(
+        title: const Text('Sicherung einspielen?'),
+        content: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (mismatch) ...[
+                Text(
+                  'Achtung: Die Sicherung stammt von '
+                  '${hwVariantLabel(backup.hwVariant)}, dieser Sensor ist '
+                  '${hwVariantLabel(target)}. Die Kalibrierung passt dann '
+                  'nicht.',
+                  style: TextStyle(
+                      color: Theme.of(dctx).colorScheme.error,
+                      fontWeight: FontWeight.w600),
+                ),
+                const SizedBox(height: 12),
+              ],
+              Text('Aus Sicherung vom '
+                  '${backup.created.toString().substring(0, 16)}'
+                  '${backup.sourceName != null ? " (${backup.sourceName})" : ""}:'),
+              const SizedBox(height: 8),
+              ..._backupSummary(backup).map(
+                (l) => Padding(
+                  padding: const EdgeInsets.only(bottom: 2),
+                  child: Text('• $l'),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Text(
+                'Der übertragene Kalibrierwert ist am selben Tank ein sehr '
+                'guter Startwert. Bei hohem Genauigkeitsanspruch später einmal '
+                'bei vollem Tank nachkalibrieren.',
+                style: TextStyle(
+                    fontSize: 12, color: Theme.of(dctx).hintColor),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(dctx, false),
+              child: const Text('Abbrechen')),
+          FilledButton(
+              onPressed: () => Navigator.pop(dctx, true),
+              child: const Text('Einspielen')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+
+    await _applyBackup(backup);
+  }
+
+  /// Menschenlesbare Zusammenfassung dessen, was geschrieben wird.
+  List<String> _backupSummary(SensorBackup b) {
+    final out = <String>[];
+    if (b.calibrated && b.calValue != null) {
+      out.add('Kalibrierwert: ${b.calValue}');
+    } else {
+      out.add('Kalibrierung: keine (Sensor bleibt unkalibriert)');
+    }
+    if (b.curve != null) out.add('Tankform: ${b.curve!.join(", ")}');
+    if (b.fluidType != null) {
+      out.add('Fluidtyp: ${fluidNames[b.fluidType] ?? b.fluidType}');
+    }
+    if (b.capacity != null) out.add('Kapazität: ${b.capacity} L');
+    if (b.instance != null) out.add('Instanz: ${b.instance}');
+    if (b.name?.isNotEmpty == true) out.add('Name: ${b.name}');
+    return out;
+  }
+
+  /// Werte der Reihe nach auf den Sensor schreiben.
+  ///
+  /// Reihenfolge ist wichtig: Der Name kommt zuletzt, weil das BLE-Modul
+  /// danach neu startet und die Verbindung trennt – alles davor muss also
+  /// schon geschrieben sein.
+  Future<void> _applyBackup(SensorBackup b) async {
+    final steps = <MapEntry<String, String>>[];
+    if (b.curve != null) {
+      steps.add(MapEntry('Tankform', buildLinCommand(b.curve!)));
+    }
+    if (b.fluidType != null) steps.add(MapEntry('Fluidtyp', 'FLUID ${b.fluidType}'));
+    if (b.capacity != null) steps.add(MapEntry('Kapazität', 'CAP ${b.capacity}'));
+    if (b.instance != null) steps.add(MapEntry('Instanz', 'INST ${b.instance}'));
+    if (b.calibrated && b.calValue != null) {
+      steps.add(MapEntry('Kalibrierung', 'CAL ${b.calValue}'));
+    } else {
+      steps.add(const MapEntry('Kalibrierung', 'CALRESET'));
+    }
+    if (b.name?.isNotEmpty == true) {
+      steps.add(MapEntry('Name', 'NAME ${b.name}'));
+    }
+
+    var done = 0;
+    for (final step in steps) {
+      try {
+        await c.send(step.value);
+        done++;
+        // Jeder Schreibzugriff löst einen Flash-Save aus; etwas Luft lassen,
+        // damit der Sensor nicht mit Kommandos überfahren wird.
+        await Future<void>.delayed(const Duration(milliseconds: 350));
+      } catch (e) {
+        _snack('Abbruch bei „${step.key}": $e');
+        return;
+      }
+    }
+
+    if (b.name?.isNotEmpty == true) {
+      _snack('$done Werte eingespielt. Das Modul startet zum Umbenennen neu.');
+    } else {
+      _snack('$done Werte eingespielt.');
+    }
+  }
+
   /// Kennlinie als CSV speichern (Spalten: Füllhöhe %, Volumen %).
   Future<void> _exportCurveCsv(List<int> curve) async {
     final sb = StringBuffer('fuellhoehe_prozent,volumen_prozent\n');
@@ -1135,6 +1391,11 @@ class _SensorPageState extends State<SensorPage> {
               icon: Icons.water_drop_outlined,
               title: 'Tankform',
               child: _tankFormBody(),
+            ),
+            _section(
+              icon: Icons.save_outlined,
+              title: 'Sicherung',
+              child: _backupBody(),
             ),
             _section(
               icon: Icons.bluetooth,

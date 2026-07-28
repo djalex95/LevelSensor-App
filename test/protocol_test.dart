@@ -127,4 +127,137 @@ void main() {
           throwsArgumentError);
     });
   });
+
+  group('hwVariantLabel', () {
+    test('bekannte Variante mit Klartext und Nummer', () {
+      expect(hwVariantLabel(1000), 'Drucksensor V1 (1000)');
+      expect(hwVariantLabel(1002), 'Ultraschall (1002)');
+    });
+
+    test('unbekannte Variante bleibt als Zahl sichtbar', () {
+      expect(hwVariantLabel(1234), '1234');
+    });
+
+    test('null -> Gedankenstrich', () {
+      expect(hwVariantLabel(null), '–');
+    });
+  });
+
+  group('parseCal', () {
+    test('kalibrierter Sensor', () {
+      final c = parseCal('CAL;1;41234');
+      expect(c, isNotNull);
+      expect(c!.calibrated, isTrue);
+      expect(c.maxVal, 41234);
+    });
+
+    test('unkalibrierter Sensor', () {
+      final c = parseCal('CAL;0;30000');
+      expect(c!.calibrated, isFalse);
+      expect(c.maxVal, 30000);
+    });
+
+    test('toleriert führende Störzeichen', () {
+      expect(parseCal('xxCAL;1;500')!.maxVal, 500);
+    });
+
+    test('Quittungen matchen nicht', () {
+      expect(parseCal('OK CAL 500'), isNull);
+      expect(parseCal('OK CALRESET'), isNull);
+      expect(parseCal('ERR CAL'), isNull);
+    });
+
+    test('unvollständige Zeile -> null', () {
+      expect(parseCal('CAL;1'), isNull);
+      expect(parseCal('CAL;1;abc'), isNull);
+    });
+  });
+
+  group('SensorBackup', () {
+    SensorBackup sample() => SensorBackup(
+          created: DateTime.utc(2026, 7, 8, 12, 30),
+          sourceName: 'Frischwasser Bug',
+          firmware: '1.2.9',
+          hwRev: 1000,
+          hwVariant: 1000,
+          calibrated: true,
+          calValue: 41234,
+          fluidType: 1,
+          capacity: 150,
+          instance: 2,
+          name: 'Frischwasser Bug',
+          curve: const [0, 8, 18, 29, 40, 50, 61, 72, 83, 92, 100],
+        );
+
+    test('Rundlauf über JSON erhält alle Werte', () {
+      final b = SensorBackup.fromJson(sample().toJson());
+      expect(b.calibrated, isTrue);
+      expect(b.calValue, 41234);
+      expect(b.fluidType, 1);
+      expect(b.capacity, 150);
+      expect(b.instance, 2);
+      expect(b.name, 'Frischwasser Bug');
+      expect(b.curve, [0, 8, 18, 29, 40, 50, 61, 72, 83, 92, 100]);
+      expect(b.hwVariant, 1000);
+      expect(b.hwRev, 1000);
+      expect(b.firmware, '1.2.9');
+      expect(b.created.toUtc(), DateTime.utc(2026, 7, 8, 12, 30));
+    });
+
+    test('fremde Datei wird abgelehnt', () {
+      expect(() => SensorBackup.fromJson({'foo': 'bar'}),
+          throwsA(isA<FormatException>()));
+    });
+
+    test('neueres Format wird abgelehnt', () {
+      final j = sample().toJson();
+      j['format'] = 99;
+      expect(() => SensorBackup.fromJson(j), throwsA(isA<FormatException>()));
+    });
+
+    test('fehlender Konfigblock wird abgelehnt', () {
+      expect(
+          () => SensorBackup.fromJson(
+              {'typ': 'levelsense-backup', 'format': 1}),
+          throwsA(isA<FormatException>()));
+    });
+
+    test('Kennlinie mit falscher Länge wird abgelehnt', () {
+      final j = sample().toJson();
+      (j['konfig'] as Map)['kennlinie'] = [0, 50, 100];
+      expect(() => SensorBackup.fromJson(j), throwsA(isA<FormatException>()));
+    });
+
+    test('fallende Kennlinie wird abgelehnt', () {
+      final j = sample().toJson();
+      (j['konfig'] as Map)['kennlinie'] = [
+        0, 10, 5, 30, 40, 50, 60, 70, 80, 90, 100 //
+      ];
+      expect(() => SensorBackup.fromJson(j), throwsA(isA<FormatException>()));
+    });
+
+    test('Wert außerhalb des Bereichs wird abgelehnt', () {
+      final j = sample().toJson();
+      (j['konfig'] as Map)['instanz'] = 99;
+      expect(() => SensorBackup.fromJson(j), throwsA(isA<FormatException>()));
+    });
+
+    test('unkalibrierte Sicherung bleibt unkalibriert', () {
+      final j = sample().toJson();
+      (j['konfig'] as Map)['kalibriert'] = false;
+      expect(SensorBackup.fromJson(j).calibrated, isFalse);
+    });
+
+    test('fehlende optionale Felder sind erlaubt', () {
+      final b = SensorBackup.fromJson({
+        'typ': 'levelsense-backup',
+        'format': 1,
+        'erstellt': '2026-07-08T12:30:00.000Z',
+        'konfig': {'kalibriert': false},
+      });
+      expect(b.curve, isNull);
+      expect(b.calValue, isNull);
+      expect(b.name, isNull);
+    });
+  });
 }

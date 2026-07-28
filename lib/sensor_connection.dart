@@ -63,6 +63,7 @@ class SensorConnection extends ChangeNotifier {
   SensorStatus? status; // letzter STAT (bleibt bei Trennung als "zuletzt" stehen)
   String? sensorName; // im Sensor gespeicherter Name (NAME-Abfrage)
   List<int>? linCurve; // Tankform-Kennlinie
+  CalibrationValue? calValue; // Kalibrierwert (CAL-Abfrage), für die Sicherung
   bool bootloaderMode = false;
   String? bootloaderVersion;
   int? rssi;
@@ -140,6 +141,26 @@ class SensorConnection extends ChangeNotifier {
     } catch (_) {}
   }
 
+  /// Wartet auf die Antwort der laufenden CAL-Abfrage (siehe [requestCal]).
+  Completer<CalibrationValue>? _calWaiter;
+
+  /// Fragt den Kalibrierwert ab und wartet auf die Antwort. Wird nur für die
+  /// Sicherung gebraucht und daher bewusst nicht bei jedem Verbinden gesendet
+  /// – Firmware vor 1.2.9 kennt `CAL` nicht und würde mit `ERR ?` antworten.
+  /// Null = keine Antwort (zu alte Firmware oder Verbindung weg).
+  Future<CalibrationValue?> requestCal(
+      {Duration timeout = const Duration(seconds: 3)}) async {
+    _calWaiter = Completer<CalibrationValue>();
+    try {
+      await send('CAL');
+      return await _calWaiter!.future.timeout(timeout);
+    } catch (_) {
+      return null;
+    } finally {
+      _calWaiter = null;
+    }
+  }
+
   /// Kommando senden und im Log vermerken. Wirft bei Sendefehler.
   Future<void> send(String cmd) async {
     addLog('> $cmd');
@@ -205,6 +226,17 @@ class SensorConnection extends ChangeNotifier {
     if (lin != null) {
       linCurve = lin;
       addLog('Kennlinie: ${lin.join(",")}');
+      return;
+    }
+    // Antwort auf die CAL-Abfrage. Muss vor der allgemeinen Log-Ausgabe
+    // stehen; "OK CAL …" enthält kein "CAL;" und landet weiterhin im Log.
+    final cal = parseCal(line);
+    if (cal != null) {
+      calValue = cal;
+      if (_calWaiter != null && !_calWaiter!.isCompleted) {
+        _calWaiter!.complete(cal);
+      }
+      notifyListeners();
       return;
     }
     final nm = parseName(line);
