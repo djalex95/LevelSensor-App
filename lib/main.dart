@@ -1573,6 +1573,7 @@ class _SensorPageState extends State<SensorPage> {
     final cs = Theme.of(context).colorScheme;
     final fw = c.status?.version;
     final hw = c.status?.hwRev;
+    final hwv = c.status?.hwVariant;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1593,6 +1594,19 @@ class _SensorPageState extends State<SensorPage> {
                 style: const TextStyle(fontWeight: FontWeight.w600)),
           ],
         ),
+        // Hardware-Variante (Messprinzip) nur zeigen, wenn der Sensor sie
+        // meldet - Firmware vor 1.2.9 kennt das HWV-Feld noch nicht.
+        if (hwv != null) ...[
+          const SizedBox(height: 4),
+          Row(
+            children: [
+              Icon(Icons.category, size: 18, color: cs.primary),
+              const SizedBox(width: 6),
+              Text('HW-Variante: ${hwVariantLabel(hwv)}',
+                  style: const TextStyle(fontWeight: FontWeight.w600)),
+            ],
+          ),
+        ],
         if (c.updateAvailable) ...[
           const SizedBox(height: 8),
           Container(

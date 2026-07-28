@@ -92,6 +92,23 @@ bool? parseFactoryResetAck(String line) {
   return null;
 }
 
+/// Klartextnamen der Hardware-Varianten (Messprinzip), gemeldet als `HWV`
+/// in der STAT-Zeile. Siehe ARCHITECTURE.md der Firmware.
+const Map<int, String> hwVariantNames = {
+  1000: 'Drucksensor V1',
+  1001: 'Drucksensor V2',
+  1002: 'Ultraschall',
+};
+
+/// Anzeigetext für eine Variantennummer. Unbekannte Nummern werden als reine
+/// Zahl gezeigt, damit auch künftige Varianten sichtbar bleiben; `null`
+/// (altes STAT ohne HWV) ergibt einen Gedankenstrich.
+String hwVariantLabel(int? id) {
+  if (id == null) return '–';
+  final name = hwVariantNames[id];
+  return name == null ? '$id' : '$name ($id)';
+}
+
 /// Fluidtyp-Codes nach NMEA2000.
 const Map<int, String> fluidNames = {
   0: 'Kraftstoff',
