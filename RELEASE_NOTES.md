@@ -1,3 +1,22 @@
+## App 1.4.8
+
+- **Neu: Sicherung der Konfiguration** (Einstellungen → Sicherung).
+  „Sichern" liest Kalibrierwert, Tankform, Fluidtyp, Kapazität, Instanz und
+  Name aus dem Sensor und legt sie als lesbare JSON-Datei ab. „Einspielen"
+  prüft die Datei, zeigt alle Werte zur Bestätigung und schreibt sie dann
+  auf den verbundenen Sensor. Gedacht für Gerätetausch, Wiederherstellung
+  nach einem Werksreset und das Einrichten eines zweiten identischen Tanks.
+  Stammt die Sicherung von einer anderen Hardware-Variante, warnt die App.
+  Benötigt Sensor-Firmware ab 1.2.9.
+- **Neu: Verbindung im Hintergrund freigeben.** Läuft die App länger als
+  15 Sekunden im Hintergrund, trennt sie die Verbindung, damit ein anderes
+  Handy an den Sensor kommt. Kommt die App vorher zurück, bleibt die
+  Verbindung bestehen; ein laufendes Firmware-Update wird nie unterbrochen.
+- Unter „Modul" wird zusätzlich die Hardware-Variante angezeigt
+  (z. B. „Drucksensor V1 (1000)"), sofern der Sensor sie meldet.
+- Passend zu Sensor-Firmware 1.2.9.
+- Intern: 57 Unit-Tests.
+
 ## App 1.4.7
 
 - Nach einem Werksreset zeigt die App den Sensor automatisch wieder mit
