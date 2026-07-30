@@ -2103,6 +2103,33 @@ class _SensorPageState extends State<SensorPage> {
       return;
     }
 
+    // Varianten-Vorprüfung: trägt der Dateiname eine hwv-Kennung und meldet
+    // der Sensor (STAT) eine andere Variante, gar nicht erst starten. Die
+    // maßgebliche Prüfung gegen das OTP macht DfuTransfer zusätzlich an der
+    // BLV-Antwort des Bootloaders - dieser Dialog hier ist die freundliche
+    // Version davon, solange die App-Firmware noch antwortet.
+    final assetHwv = hwvFromAssetName(name);
+    final sensorHwv = c.status?.hwVariant;
+    if (assetHwv != null && sensorHwv != null && assetHwv != sensorHwv) {
+      if (mounted) {
+        await showDialog<void>(
+          context: context,
+          builder: (_) => AlertDialog(
+            title: const Text('Falsche Hardware-Variante'),
+            content: Text('$name\n\nDiese Datei ist für Variante '
+                '${hwVariantLabel(assetHwv)} bestimmt, der verbundene Sensor '
+                'ist ${hwVariantLabel(sensorHwv, c.status?.hwSuffix)}.'),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('OK')),
+            ],
+          ),
+        );
+      }
+      return;
+    }
+
     // Plausibilitätsprüfung: falsche Dateien (z. B. die Bootloader-.bin oder
     // eine beliebige Fremddatei) gar nicht erst übertragen – der Bootloader
     // prüft nur die Transfer-CRC, nicht den Inhalt.
@@ -2192,6 +2219,7 @@ class _SensorPageState extends State<SensorPage> {
         ble: c.ble,
         device: c.device!,
         firmware: fw,
+        assetHwVariant: hwvFromAssetName(name),
         onProgress: (s, p) {
           status.value = s;
           progress.value = p;

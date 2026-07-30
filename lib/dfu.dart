@@ -81,6 +81,12 @@ class DfuTransfer {
   /// Wird mit der Bootloader-Version aufgerufen, sobald sie bekannt ist.
   final void Function(String blVersion)? onBootloaderVersion;
 
+  /// Hardware-Variante, fuer die das Image bestimmt ist (hwv-Kennung aus
+  /// dem Dateinamen), oder null wenn unbekannt (alte Dateinamen). Meldet
+  /// der Bootloader eine abweichende Geraete-Variante aus dem OTP
+  /// (BLV;...;HWV=1003A), wird VOR dem Loeschen des Flash abgebrochen.
+  final int? assetHwVariant;
+
   /// Nutzdaten je DFUD-Paket (passt inkl. Header in einen BLE-Write).
   static const int chunk = 192;
 
@@ -90,6 +96,7 @@ class DfuTransfer {
     required this.firmware,
     required this.onProgress,
     this.onBootloaderVersion,
+    this.assetHwVariant,
   });
 
   Future<void> run() async {
@@ -138,6 +145,21 @@ class DfuTransfer {
       // Bootloader-Version melden (informativ).
       final parts = peer.split(';');
       if (parts.length > 1) onBootloaderVersion?.call(parts[1].trim());
+
+      // Varianten-Wache: ein provisioniertes Geraet meldet seine
+      // Hardware-Kennung aus dem OTP mit (BLV;<ver>;HWV=1003A). Passt
+      // das gewaehlte Image nicht dazu, JETZT abbrechen - der Flash ist
+      // noch unberuehrt, das Geraet bootet einfach zurueck in die App.
+      final m = RegExp(r'HWV=(\d+)').firstMatch(peer);
+      final deviceHwv = m == null ? null : int.tryParse(m.group(1)!);
+      if (assetHwVariant != null &&
+          deviceHwv != null &&
+          deviceHwv != assetHwVariant) {
+        throw Exception(
+            'Falsche Firmware-Variante: das Geraet ist laut OTP Variante '
+            '$deviceHwv, die gewaehlte Datei ist fuer $assetHwVariant. '
+            'Es wurde nichts geflasht.');
+      }
     }
 
     // 3) Transfer starten.
