@@ -96,44 +96,49 @@ class DfuTransfer {
     final size = firmware.length;
     final crc = dfuCrc32(firmware);
 
-    // 1) Falls die App läuft: in den Update-Modus schicken (Sensor startet neu).
-    //    Falls schon im Bootloader (z. B. nach einem Abbruch): schadet nicht,
-    //    der Bootloader ignoriert das Kommando.
+    // 1+2) In den Bootloader wechseln - geprüft statt getaktet. Nach jedem
+    //      Verbinden per VER nachfragen, wer antwortet: die App-Firmware
+    //      meldet "VER;...", der Bootloader "BLV;...". Solange die
+    //      App-Firmware antwortet, DFU (erneut) anfordern, selbst trennen
+    //      (sofort wirksam, unabhängig vom Supervision-Timeout des Handys),
+    //      neu verbinden und wieder prüfen. Das deckt auch den Fall ab,
+    //      dass ein DFU-Kommando unterwegs verloren geht oder erst
+    //      verspätet zugestellt wird.
     onProgress('Update wird vorbereitet…', 0);
-    if (ble.isConnected) {
-      // Kommando bestätigen lassen, damit es sicher angekommen ist. Der
-      // Bootloader (falls wir schon dort sind) antwortet nicht auf "DFU" -
-      // dann läuft die Wartezeit einfach leer durch.
-      try {
-        final okFut = _awaitLine(
-            (l) => l.startsWith('OK DFU'), const Duration(seconds: 3));
-        await ble.send('DFU');
-        await okFut;
-      } catch (_) {/* keine Bestätigung - Sensor resettet trotzdem */}
-
-      // 2) Nicht auf den Supervision-Timeout des Handys warten (der kann
-      //    länger dauern als jedes feste Zeitfenster), sondern selbst
-      //    trennen - eine vom Handy ausgehende Trennung ist sofort wirksam.
-      //    Danach Sensor-Reset und Modul-Neustart abwarten. War der Sensor
-      //    schon im Bootloader, trifft ihn der Reconnect direkt wieder.
-      await ble.disconnect();
-      await Future.delayed(const Duration(seconds: 4));
+    String? peer;
+    for (int round = 0; ; round++) {
+      if (ble.isConnected) {
+        peer = await _probeVer();
+        if (peer == null || peer.startsWith('BLV')) {
+          // BLV: der Bootloader meldet sich. Keine Antwort: entweder ein
+          // alter Bootloader ohne VER-Kommando oder eine tote Verbindung -
+          // beides klärt der DFUS-Start unten von selbst.
+          break;
+        }
+        if (round >= 3) {
+          throw Exception('Sensor wechselt nicht in den Update-Modus '
+              '(antwortet weiterhin als App-Firmware).');
+        }
+        try {
+          final okFut = _awaitLine(
+              (l) => l.startsWith('OK DFU'), const Duration(seconds: 3));
+          await ble.send('DFU');
+          await okFut;
+        } catch (_) {/* keine Bestätigung - Sensor resettet trotzdem */}
+        try {
+          await ble.disconnect();
+        } catch (_) {/* war schon getrennt */}
+        await Future.delayed(const Duration(seconds: 4));
+      }
+      onProgress('Neu verbinden…', 0);
+      await _reconnect();
+      onProgress('Update wird vorbereitet…', 0);
     }
-    onProgress('Neu verbinden…', 0);
-    await _reconnect();
-
-    // 2b) Bootloader-Version abfragen (informativ; alte Bootloader ohne
-    //     VER-Kommando antworten nicht – dann einfach überspringen).
-    try {
-      // Listener zuerst, dann senden – sonst kann eine schnelle Antwort
-      // zwischen Write und Listen verloren gehen.
-      final blFut =
-          _awaitLine((l) => l.startsWith('BLV'), const Duration(seconds: 3));
-      await ble.send('VER');
-      final v = await blFut;
-      final parts = v.split(';');
+    if (peer != null && peer.startsWith('BLV')) {
+      // Bootloader-Version melden (informativ).
+      final parts = peer.split(';');
       if (parts.length > 1) onBootloaderVersion?.call(parts[1].trim());
-    } catch (_) {/* kein VER-fähiger Bootloader – ignorieren */}
+    }
 
     // 3) Transfer starten.
     onProgress('Übertragung startet…', 0);
@@ -209,6 +214,21 @@ class DfuTransfer {
       await Future.delayed(const Duration(seconds: 2));
     }
     throw Exception('Neu verbinden fehlgeschlagen ($last)');
+  }
+
+  /// Sendet VER und liefert die erste "VER;..."- oder "BLV;..."-Antwort,
+  /// null bei Timeout. Listener zuerst, dann senden - sonst kann eine
+  /// schnelle Antwort zwischen Write und Listen verloren gehen.
+  Future<String?> _probeVer() async {
+    try {
+      final fut = _awaitLine(
+          (l) => l.startsWith('BLV') || l.startsWith('VER'),
+          const Duration(seconds: 3));
+      await ble.send('VER');
+      return await fut;
+    } catch (_) {
+      return null;
+    }
   }
 
   /// Registriert erst den Antwort-Listener und sendet DANN das Paket.

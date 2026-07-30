@@ -10,11 +10,13 @@ class SensorStatus {
   final int? instance; // 0..15
   final bool? calibrated; // 100%-Kalibrierung vorhanden
   final String? version; // Firmware-Version, z. B. "1.2.0"
-  final int? hwRev; // Hardware-Revision, z. B. 1000
   final int? hwVariant; // Hardware-Variante (Messprinzip): 1000=Druck V1,
-  // 1001=Druck V2, 1002=Ultraschall. Grundlage für die passende
-  // Firmware-Auswahl beim Update (Cross-Flash-Schutz). null = altes STAT
-  // ohne HWV-Feld.
+  // 1001=Druck V2, 1002=Ultraschall, 1003=Druck V2 flach. Grundlage für
+  // die passende Firmware-Auswahl beim Update (Cross-Flash-Schutz).
+  // null = altes STAT ohne HWV-Feld.
+  final String? hwSuffix; // Platinen-Stand: Buchstabe hinter der Variante
+  // (z. B. "A" aus "HWV=1003A"). Rein informativ, gleiche Firmware.
+  // null = Firmware, die noch keinen Buchstaben meldet.
 
   const SensorStatus({
     this.level,
@@ -24,11 +26,13 @@ class SensorStatus {
     this.instance,
     this.calibrated,
     this.version,
-    this.hwRev,
     this.hwVariant,
+    this.hwSuffix,
   });
 
-  /// Parst `STAT;L=73.5;T=23.45;F=1;C=150;I=0;CAL=1;V=1.2.3-dev;HW=1000;HWV=1000`.
+  /// Parst `STAT;L=73.5;T=23.45;F=1;C=150;I=0;CAL=1;V=1.2.3-dev;HWV=1003A`.
+  /// Ältere Firmware meldet `HWV=1000` ohne Buchstaben und zusätzlich
+  /// `HW=1000` (die frühere separate Revision) - das HW-Feld wird ignoriert.
   /// Zerlegt die Zeile ab `STAT` an `;` in `Schlüssel=Wert`-Paare, sodass auch
   /// nicht-numerische Werte (z. B. `V=1.2.3-dev`) vollständig erhalten bleiben.
   /// Unbekannte/fehlende Felder werden toleriert (Vorwärts-/Rückwärtskompat.).
@@ -52,9 +56,22 @@ class SensorStatus {
       instance: int.tryParse(map['I'] ?? ''),
       calibrated: map['CAL'] == '1',
       version: map['V'],
-      hwRev: int.tryParse(map['HW'] ?? ''),
-      hwVariant: int.tryParse(map['HWV'] ?? ''),
+      hwVariant: _hwvNumber(map['HWV']),
+      hwSuffix: _hwvSuffix(map['HWV']),
     );
+  }
+
+  /// Zerlegt die HWV-Meldung `1003A` (oder alt: `1000`) in Zahl und
+  /// Platinen-Buchstaben.
+  static final RegExp _hwvRe = RegExp(r'^(\d+)\s*([A-Za-z]?)$');
+  static int? _hwvNumber(String? v) {
+    final m = _hwvRe.firstMatch(v?.trim() ?? '');
+    return m == null ? null : int.tryParse(m.group(1)!);
+  }
+  static String? _hwvSuffix(String? v) {
+    final m = _hwvRe.firstMatch(v?.trim() ?? '');
+    final s = m?.group(2) ?? '';
+    return s.isEmpty ? null : s.toUpperCase();
   }
 }
 
@@ -119,17 +136,19 @@ CalibrationValue? parseCal(String line) {
 /// in der STAT-Zeile. Siehe ARCHITECTURE.md der Firmware.
 const Map<int, String> hwVariantNames = {
   1000: 'Drucksensor V1',
-  1001: 'Drucksensor V2',
+  1001: 'Drucksensor V2 ±10 kPa',
   1002: 'Ultraschall',
+  1003: 'Drucksensor V2 ±1 kPa',
 };
 
 /// Anzeigetext für eine Variantennummer. Unbekannte Nummern werden als reine
 /// Zahl gezeigt, damit auch künftige Varianten sichtbar bleiben; `null`
 /// (altes STAT ohne HWV) ergibt einen Gedankenstrich.
-String hwVariantLabel(int? id) {
+String hwVariantLabel(int? id, [String? hwSuffix]) {
   if (id == null) return '–';
+  final code = '$id${hwSuffix ?? ''}';
   final name = hwVariantNames[id];
-  return name == null ? '$id' : '$name ($id)';
+  return name == null ? code : '$name ($code)';
 }
 
 /// Vollständige Sicherung der Sensorkonfiguration.
@@ -150,8 +169,8 @@ class SensorBackup {
   final DateTime created;
   final String? sourceName; // Name des Sensors zum Zeitpunkt der Sicherung
   final String? firmware;
-  final int? hwRev;
   final int? hwVariant;
+  final String? hwSuffix; // Platinen-Buchstabe, z. B. "A"
 
   final bool calibrated;
   final int? calValue; // max_val, Rohdruck bei 100 %
@@ -165,8 +184,8 @@ class SensorBackup {
     required this.created,
     this.sourceName,
     this.firmware,
-    this.hwRev,
     this.hwVariant,
+    this.hwSuffix,
     this.calibrated = false,
     this.calValue,
     this.fluidType,
@@ -183,8 +202,8 @@ class SensorBackup {
         'quelle': {
           'name': sourceName,
           'firmware': firmware,
-          'hw_revision': hwRev,
           'hw_variante': hwVariant,
+          'hw_platine': hwSuffix,
         },
         'konfig': {
           'kalibriert': calibrated,
@@ -247,8 +266,8 @@ class SensorBackup {
       created: DateTime.tryParse('${j['erstellt']}') ?? DateTime(1970),
       sourceName: src['name'] as String?,
       firmware: src['firmware'] as String?,
-      hwRev: (src['hw_revision'] as num?)?.round(),
       hwVariant: (src['hw_variante'] as num?)?.round(),
+      hwSuffix: src['hw_platine'] as String?,
       calibrated: cfg['kalibriert'] == true,
       calValue: range('kalibrierwert', 1, 1000000),
       fluidType: range('fluidtyp', 0, 15),

@@ -5,7 +5,7 @@ void main() {
   group('SensorStatus.parse', () {
     test('vollständige STAT-Zeile', () {
       final s = SensorStatus.parse(
-          'STAT;L=73.5;T=23.45;F=1;C=150;I=2;CAL=1;V=1.2.4;HW=1000');
+          'STAT;L=73.5;T=23.45;F=1;C=150;I=2;CAL=1;V=1.2.4;HWV=1003A');
       expect(s, isNotNull);
       expect(s!.level, closeTo(73.5, 0.001));
       expect(s.temp, closeTo(23.45, 0.001));
@@ -14,7 +14,32 @@ void main() {
       expect(s.instance, 2);
       expect(s.calibrated, isTrue);
       expect(s.version, '1.2.4');
-      expect(s.hwRev, 1000);
+      expect(s.hwVariant, 1003);
+      expect(s.hwSuffix, 'A');
+    });
+
+    test('HWV alter Firmware ohne Buchstaben', () {
+      final s = SensorStatus.parse('STAT;L=10.0;HW=1000;HWV=1000');
+      expect(s!.hwVariant, 1000);
+      expect(s.hwSuffix, isNull); // kein Buchstabe gemeldet
+    });
+
+    test('ganz altes STAT ohne HWV-Feld', () {
+      final s = SensorStatus.parse('STAT;L=10.0;HW=1000');
+      expect(s!.hwVariant, isNull);
+      expect(s.hwSuffix, isNull);
+    });
+
+    test('kaputte HWV wird verworfen statt geraten', () {
+      final s = SensorStatus.parse('STAT;L=10.0;HWV=abc');
+      expect(s!.hwVariant, isNull);
+      expect(s.hwSuffix, isNull);
+    });
+
+    test('Kleinbuchstabe wird normalisiert', () {
+      final s = SensorStatus.parse('STAT;L=10.0;HWV=1001b');
+      expect(s!.hwVariant, 1001);
+      expect(s.hwSuffix, 'B');
     });
 
     test('toleriert Störzeichen vor STAT und dev-Version', () {
@@ -178,8 +203,8 @@ void main() {
           created: DateTime.utc(2026, 7, 8, 12, 30),
           sourceName: 'Frischwasser Bug',
           firmware: '1.2.9',
-          hwRev: 1000,
           hwVariant: 1000,
+          hwSuffix: 'A',
           calibrated: true,
           calValue: 41234,
           fluidType: 1,
@@ -199,9 +224,20 @@ void main() {
       expect(b.name, 'Frischwasser Bug');
       expect(b.curve, [0, 8, 18, 29, 40, 50, 61, 72, 83, 92, 100]);
       expect(b.hwVariant, 1000);
-      expect(b.hwRev, 1000);
+      expect(b.hwSuffix, 'A');
       expect(b.firmware, '1.2.9');
       expect(b.created.toUtc(), DateTime.utc(2026, 7, 8, 12, 30));
+    });
+
+    test('alte Sicherung mit hw_revision bleibt lesbar', () {
+      final j = sample().toJson();
+      final src = (j['quelle'] as Map).cast<String, dynamic>();
+      src.remove('hw_platine');
+      src['hw_revision'] = 1000; // Feld alter App-Versionen
+      j['quelle'] = src;
+      final b = SensorBackup.fromJson(j);
+      expect(b.hwVariant, 1000);
+      expect(b.hwSuffix, isNull); // hw_revision wird ignoriert
     });
 
     test('fremde Datei wird abgelehnt', () {

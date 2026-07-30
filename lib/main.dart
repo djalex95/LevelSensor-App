@@ -1011,8 +1011,8 @@ class _SensorPageState extends State<SensorPage> {
           ? c.sensorName
           : c.displayName,
       firmware: st.version,
-      hwRev: st.hwRev,
       hwVariant: st.hwVariant,
+      hwSuffix: st.hwSuffix,
       calibrated: cal.calibrated,
       calValue: cal.maxVal,
       fluidType: st.fluidType,
@@ -1833,8 +1833,8 @@ class _SensorPageState extends State<SensorPage> {
   Widget _moduleBody() {
     final cs = Theme.of(context).colorScheme;
     final fw = c.status?.version;
-    final hw = c.status?.hwRev;
     final hwv = c.status?.hwVariant;
+    final hws = c.status?.hwSuffix;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1842,17 +1842,10 @@ class _SensorPageState extends State<SensorPage> {
           children: [
             Icon(Icons.memory, size: 18, color: cs.primary),
             const SizedBox(width: 6),
-            Text('Firmware-Version: ${fw ?? '–'}',
-                style: const TextStyle(fontWeight: FontWeight.w600)),
-          ],
-        ),
-        const SizedBox(height: 4),
-        Row(
-          children: [
-            Icon(Icons.developer_board, size: 18, color: cs.primary),
-            const SizedBox(width: 6),
-            Text('HW-Revision: ${hw ?? '–'}',
-                style: const TextStyle(fontWeight: FontWeight.w600)),
+            Expanded(
+              child: Text('Firmware-Version: ${fw ?? '–'}',
+                  style: const TextStyle(fontWeight: FontWeight.w600)),
+            ),
           ],
         ),
         // Hardware-Variante (Messprinzip) nur zeigen, wenn der Sensor sie
@@ -1863,8 +1856,10 @@ class _SensorPageState extends State<SensorPage> {
             children: [
               Icon(Icons.category, size: 18, color: cs.primary),
               const SizedBox(width: 6),
-              Text('HW-Variante: ${hwVariantLabel(hwv)}',
-                  style: const TextStyle(fontWeight: FontWeight.w600)),
+              Expanded(
+                child: Text('HW-Variante: ${hwVariantLabel(hwv, hws)}',
+                    style: const TextStyle(fontWeight: FontWeight.w600)),
+              ),
             ],
           ),
         ],
