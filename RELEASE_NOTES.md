@@ -1,3 +1,31 @@
+## App 1.4.9
+
+- **Update-Angebot nach Hardware-Variante gefiltert.** Die App bietet nur
+  noch Firmware an, die zur gemeldeten Variante des Sensors passt
+  (hwv-Kennung im Dateinamen der Release-Assets). Releases der alten
+  V1-Linie (bis Firmware 1.2.9, ohne Kennung) sehen nur V1-Sensoren.
+  Damit kann insbesondere die Verwechslung 1001/1003 nicht mehr
+  passieren, die nicht als Fehler auffiele, sondern nur als zehnfach
+  falscher Fuellstand. Auch die Update-Benachrichtigung bewertet nur
+  noch passende Releases.
+- **Firmware-Update robuster.** Beim Wechsel in den Update-Modus fragt
+  die App nach jedem Verbinden nach, ob sie mit der App-Firmware oder
+  dem Bootloader spricht, und fordert den Update-Modus bei Bedarf erneut
+  an. Verlorene oder verspaetet zugestellte Kommandos fuehren nicht mehr
+  zum Timeout-Abbruch. Zusaetzlich trennt die App die Verbindung selbst,
+  statt auf den Bluetooth-Timeout des Handys zu warten - der Wechsel in
+  den Bootloader dauert damit zuverlaessig nur wenige Sekunden.
+- Unter „Modul" wird die Hardware-Variante mit Platinen-Stand angezeigt,
+  z. B. „Drucksensor V2 ±1 kPa (1003A)". Die Variantennamen nennen jetzt
+  den Messbereich (±10 kPa / ±1 kPa). Die separate Zeile „HW-Revision"
+  entfaellt (Firmware ab 1.2.10 meldet das Feld nicht mehr; bei aelterer
+  Firmware trug es keine Information).
+- Sicherungsdateien speichern den Platinen-Stand (`hw_platine`) statt der
+  frueheren `hw_revision`; alte Sicherungen bleiben lesbar.
+- Passend zu Sensor-Firmware 1.2.10; aeltere Firmware (STAT ohne
+  Buchstaben oder ohne HWV-Feld) wird weiter unterstuetzt.
+- Intern: 68 Unit-Tests.
+
 ## App 1.4.8
 
 - **Neu: Sicherung der Konfiguration** (Einstellungen → Sicherung).
