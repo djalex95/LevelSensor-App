@@ -101,20 +101,26 @@ class DfuTransfer {
     //    der Bootloader ignoriert das Kommando.
     onProgress('Update wird vorbereitet…', 0);
     if (ble.isConnected) {
-      await ble.send('DFU');
-    }
+      // Kommando bestätigen lassen, damit es sicher angekommen ist. Der
+      // Bootloader (falls wir schon dort sind) antwortet nicht auf "DFU" -
+      // dann läuft die Wartezeit einfach leer durch.
+      try {
+        final okFut = _awaitLine(
+            (l) => l.startsWith('OK DFU'), const Duration(seconds: 3));
+        await ble.send('DFU');
+        await okFut;
+      } catch (_) {/* keine Bestätigung - Sensor resettet trotzdem */}
 
-    // 2) Auf einen Neustart/Trennung warten. Kommt keine Trennung, sind wir
-    //    vermutlich schon im Bootloader und bleiben verbunden.
-    final disconnected = await _waitDisconnect(const Duration(seconds: 6));
-    if (disconnected) {
-      await Future.delayed(const Duration(seconds: 3)); // Modul bootet + advertised
-      onProgress('Neu verbinden…', 0);
-      await _reconnect();
-    } else if (!ble.isConnected) {
-      onProgress('Neu verbinden…', 0);
-      await _reconnect();
+      // 2) Nicht auf den Supervision-Timeout des Handys warten (der kann
+      //    länger dauern als jedes feste Zeitfenster), sondern selbst
+      //    trennen - eine vom Handy ausgehende Trennung ist sofort wirksam.
+      //    Danach Sensor-Reset und Modul-Neustart abwarten. War der Sensor
+      //    schon im Bootloader, trifft ihn der Reconnect direkt wieder.
+      await ble.disconnect();
+      await Future.delayed(const Duration(seconds: 4));
     }
+    onProgress('Neu verbinden…', 0);
+    await _reconnect();
 
     // 2b) Bootloader-Version abfragen (informativ; alte Bootloader ohne
     //     VER-Kommando antworten nicht – dann einfach überspringen).
@@ -184,16 +190,6 @@ class DfuTransfer {
     if (!f.contains('OK')) throw Exception('Abschluss fehlgeschlagen: $f');
 
     onProgress('Update erfolgreich – Sensor startet neu.', 1);
-  }
-
-  /// true, wenn innerhalb der Zeit eine Trennung eintrat.
-  Future<bool> _waitDisconnect(Duration t) async {
-    try {
-      await ble.connected.firstWhere((c) => c == false).timeout(t);
-      return true;
-    } catch (_) {
-      return false;
-    }
   }
 
   Future<void> _reconnect() async {
