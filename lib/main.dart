@@ -640,8 +640,9 @@ class _SensorPageState extends State<SensorPage> {
   void initState() {
     super.initState();
     c.addListener(_onConn);
-    // Bereits vorhandene Daten übernehmen (Seite kann jederzeit geöffnet werden)
-    _fwAssets = widget.registry.fwAssets;
+    // Bereits vorhandene Daten übernehmen (Seite kann jederzeit geöffnet
+    // werden), dabei auf die Variante dieses Sensors filtern.
+    _fwAssets = assetsForVariant(widget.registry.fwAssets, c.status?.hwVariant);
     if (_fwAssets.isNotEmpty) _fwSel = _fwAssets.first;
     _seedFromConn();
   }
@@ -2021,11 +2022,17 @@ class _SensorPageState extends State<SensorPage> {
     });
     try {
       final assets = await _fwRepo.fetchBinAssets();
-      widget.registry.fwAssets = assets; // für andere Seiten mitverwenden
+      widget.registry.fwAssets = assets; // roh, andere Seiten filtern selbst
+      final match = assetsForVariant(assets, c.status?.hwVariant);
       setState(() {
-        _fwAssets = assets;
-        _fwSel = assets.isNotEmpty ? assets.first : null;
-        if (assets.isEmpty) _fwError = 'Keine .bin in den Releases gefunden.';
+        _fwAssets = match;
+        _fwSel = match.isNotEmpty ? match.first : null;
+        if (match.isEmpty) {
+          _fwError = assets.isEmpty
+              ? 'Keine .bin in den Releases gefunden.'
+              : 'Kein Release für die Hardware-Variante dieses Sensors '
+                  '(${hwVariantLabel(c.status?.hwVariant, c.status?.hwSuffix)}).';
+        }
       });
     } catch (e) {
       setState(() {

@@ -470,8 +470,11 @@ class SensorRegistry extends ChangeNotifier {
   Future<void> _checkFirmwareUpdate(SensorConnection conn) async {
     try {
       if (fwAssets.isEmpty) fwAssets = await _fwRepo.fetchBinAssets();
-      if (fwAssets.isEmpty) return;
-      final latest = fwAssets.first.version; // neueste zuerst
+      // Nur Assets der eigenen Hardware-Variante bewerten - sonst meldet
+      // die App einem V1-Sensor ein "Update", das es fuer ihn nicht gibt.
+      final match = assetsForVariant(fwAssets, conn.status?.hwVariant);
+      if (match.isEmpty) return;
+      final latest = match.first.version; // neueste zuerst
       final cur = conn.status?.version;
       if (cur == null) return;
       conn.setUpdateInfo(latest, isNewerVersion(latest, cur));

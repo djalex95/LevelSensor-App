@@ -36,6 +36,8 @@ class FirmwareAsset {
   final String url; // direkter Download-Link
   final int size; // Bytes
   final DateTime? published;
+  final int? hwVariant; // aus "_hwv1003" im Dateinamen; null = Release
+  // der V1-Linie (bis v1.2.9), deren Dateinamen keine Kennung tragen
 
   FirmwareAsset({
     required this.version,
@@ -44,10 +46,39 @@ class FirmwareAsset {
     required this.url,
     required this.size,
     this.published,
+    this.hwVariant,
   });
 
   /// Kurze Anzeige, z. B. "V 1.2.0".
   String get label => 'V $version';
+}
+
+/// Hardware-Variante aus einem Asset-Dateinamen, z. B.
+/// "Fuellstandsensor_v1.2.10_hwv1003.bin" -> 1003. null, wenn der Name
+/// keine hwv-Kennung traegt (Releases der V1-Linie bis v1.2.9).
+int? hwvFromAssetName(String name) {
+  final m = RegExp(r'hwv(\d+)', caseSensitive: false).firstMatch(name);
+  return m == null ? null : int.tryParse(m.group(1)!);
+}
+
+/// Filtert Release-Assets auf die zum Sensor passende Hardware-Variante.
+///
+/// Regeln:
+/// - Asset MIT hwv-Kennung: nur anbieten, wenn sie exakt der vom Sensor
+///   gemeldeten Variante entspricht.
+/// - Asset OHNE Kennung (V1-Linie bis v1.2.9): nur fuer Sensoren der
+///   Variante 1000 oder ohne HWV-Meldung (alte V1-Firmware) anbieten.
+///
+/// So bekommt ein Sensor nie eine Firmware der falschen Variante
+/// angeboten - bei 1001 gegen 1003 fiele die nicht als Fehler auf,
+/// sondern nur als zehnfach falscher Fuellstand.
+List<FirmwareAsset> assetsForVariant(
+    List<FirmwareAsset> assets, int? sensorHwVariant) {
+  final legacySensor = sensorHwVariant == null || sensorHwVariant == 1000;
+  return assets
+      .where((a) =>
+          a.hwVariant == null ? legacySensor : a.hwVariant == sensorHwVariant)
+      .toList();
 }
 
 /// Liest die Releases eines öffentlichen GitHub-Repos und liefert deren
@@ -90,6 +121,7 @@ class GithubReleases {
             url: a['browser_download_url'] as String? ?? '',
             size: (a['size'] as num?)?.toInt() ?? 0,
             published: published,
+            hwVariant: hwvFromAssetName(name),
           ));
         }
       }
