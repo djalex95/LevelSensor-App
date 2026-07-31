@@ -71,3 +71,15 @@ Mindest-SDK in `android/app/build.gradle` auf 21 oder höher setzen
 - Tankform-Assistent wie im PC-Tool („X Liter einfüllen → aktuellen Wert
   übernehmen"), inkl. Liter-Anzeige aus der Kapazität
 - Automatisches Wiederverbinden, Anzeige des Verbindungsstatus
+
+## Versionsnummern
+
+Die Nummer hat drei Stellen, X.Y.Z, und jede Stelle hat eine feste Bedeutung:
+**X** steigt bei einer größeren Änderung, **Y** wenn ein kleineres Feature
+dazukommt, **Z** bei Bugfixes. Das gilt gleich in allen drei Repositories
+(Firmware, Bootloader, App).
+
+Die App zählt in `version:` in `pubspec.yaml`. Die Zahl hinter dem `+` ist der
+Build-Zähler für die Stores und läuft unabhängig davon weiter. Freigegeben wird
+über einen Tag `vX.Y.Z`; die CI bricht ab, wenn Tag und `pubspec.yaml` nicht
+zusammenpassen.
