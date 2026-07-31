@@ -156,10 +156,13 @@ void main() {
   group('hwVariantLabel', () {
     test('bekannte Variante mit Klartext und Nummer', () {
       expect(hwVariantLabel(1000), 'Drucksensor V1 (1000)');
-      expect(hwVariantLabel(1002), 'Ultraschall (1002)');
+      expect(hwVariantLabel(1003, 'A'), 'Drucksensor V2 flach ±1 kPa (1003A)');
     });
 
     test('unbekannte Variante bleibt als Zahl sichtbar', () {
+      // 1002 (Ultraschall) existiert nur als Idee in version.h der
+      // Firmware - der fruehere Klartext-Eintrag war ein Phantom.
+      expect(hwVariantLabel(1002), '1002');
       expect(hwVariantLabel(1234), '1234');
     });
 

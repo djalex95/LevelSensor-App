@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io' show File, Platform;
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
@@ -498,6 +499,7 @@ class _DashboardPageState extends State<DashboardPage>
         if (s.capacity != null) 'Tank ${s.capacity} L',
         if (s.temp != null) '${s.temp!.toStringAsFixed(1)} °C',
         if (fluidNames.containsKey(s.fluidType)) fluidNames[s.fluidType]!,
+        if (s.hwVariant != null) 'HW ${s.hwVariant}${s.hwSuffix ?? ''}',
       ];
       dataRow = Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -624,10 +626,20 @@ class _SensorPageState extends State<SensorPage> {
   final TextEditingController _nameCtrl = TextEditingController();
   final FocusNode _nameFocus = FocusNode();
   String? _lastSensorName; // zuletzt ins Feld übernommener Name
+  bool _nameSeeded = false; // Fallback-Name nur EINMAL eintragen (sonst
+  // füllt jede STAT-Zeile ein bewusst geleertes Feld wieder auf)
 
   // Gemessene Füllhöhe (%) je Schritt für den Tankform-Assistenten
   final List<TextEditingController> _heightCtrls =
       List.generate(11, (_) => TextEditingController());
+
+  // Glättungsfilter (FILT): lokale Auswahl; wird vom Sensorwert vorbelegt,
+  // solange der Nutzer den Regler noch nicht angefasst hat.
+  int _filtSel = 50;
+  bool _filtTouched = false;
+
+  // Eingabefeld der Log-Konsole (Zahnrad -> Log).
+  final TextEditingController _consoleCtrl = TextEditingController();
 
   // Firmware-Releases aus GitHub (öffentliches Repo).
   static const _fwRepo = GithubReleases('djalex95', 'LevelsensorV1');
@@ -655,13 +667,20 @@ class _SensorPageState extends State<SensorPage> {
       _instCtrl.text = (s.instance ?? 0).toString();
       _configInit = true;
     }
+    if (!_filtTouched && c.filtValue != null) _filtSel = c.filtValue!;
     final nm = c.sensorName;
     if (nm != null && nm.isNotEmpty && nm != _lastSensorName) {
+      // Neuer Name vom Sensor (z. B. vom Plotter umbenannt): übernehmen,
+      // aber nie während der Nutzer im Feld tippt.
       if (!_nameFocus.hasFocus) _nameCtrl.text = nm;
       _lastSensorName = nm;
-    } else if (_nameCtrl.text.isEmpty) {
+    } else if (!_nameSeeded && _nameCtrl.text.isEmpty) {
+      // Fallback (noch kein Sensorname bekannt) nur einmal eintragen.
+      // Sonst taucht in einem absichtlich geleerten Feld beim nächsten
+      // Status-Update sofort wieder der alte Name auf.
       _nameCtrl.text = c.displayName;
     }
+    _nameSeeded = true;
   }
 
   void _onConn() {
@@ -684,6 +703,7 @@ class _SensorPageState extends State<SensorPage> {
     _instCtrl.dispose();
     _nameCtrl.dispose();
     _nameFocus.dispose();
+    _consoleCtrl.dispose();
     for (final ctrl in _heightCtrls) {
       ctrl.dispose();
     }
@@ -949,9 +969,10 @@ class _SensorPageState extends State<SensorPage> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
-          'Sichert Kalibrierung, Tankform, Fluidtyp, Kapazität, Instanz und '
-          'Name in eine Datei. Die NMEA2000-Adresse gehört bewusst nicht dazu '
-          '– sie wird am Bus ohnehin neu vergeben.',
+          'Sichert Kalibrierung (100 % und Nullpunkt), Glättung, Tankform, '
+          'Fluidtyp, Kapazität, Instanz und Name in eine Datei. Die '
+          'NMEA2000-Adresse gehört bewusst nicht dazu – sie wird am Bus '
+          'ohnehin neu vergeben.',
           style: TextStyle(fontSize: 12, color: Theme.of(context).hintColor),
         ),
         const SizedBox(height: 10),
@@ -1006,6 +1027,10 @@ class _SensorPageState extends State<SensorPage> {
       return;
     }
 
+    // Filterstärke (ab Firmware 1.3.0); ältere Firmware kennt FILT nicht.
+    final filt =
+        c.supportsV13 ? (c.filtValue ?? await c.requestFilt()) : null;
+
     final backup = SensorBackup(
       created: DateTime.now(),
       sourceName: c.sensorName?.isNotEmpty == true
@@ -1016,6 +1041,8 @@ class _SensorPageState extends State<SensorPage> {
       hwSuffix: st.hwSuffix,
       calibrated: cal.calibrated,
       calValue: cal.maxVal,
+      calOffset: cal.offset,
+      filter: filt,
       fluidType: st.fluidType,
       capacity: st.capacity,
       instance: st.instance,
@@ -1138,10 +1165,12 @@ class _SensorPageState extends State<SensorPage> {
   List<String> _backupSummary(SensorBackup b) {
     final out = <String>[];
     if (b.calibrated && b.calValue != null) {
-      out.add('Kalibrierwert: ${b.calValue}');
+      out.add('Kalibrierwert: ${b.calValue}'
+          '${b.calOffset != null ? ' (Nullpunkt ${b.calOffset})' : ''}');
     } else {
       out.add('Kalibrierung: keine (Sensor bleibt unkalibriert)');
     }
+    if (b.filter != null) out.add('Glättung: ${b.filter}');
     if (b.curve != null) out.add('Tankform: ${b.curve!.join(", ")}');
     if (b.fluidType != null) {
       out.add('Fluidtyp: ${fluidNames[b.fluidType] ?? b.fluidType}');
@@ -1165,10 +1194,23 @@ class _SensorPageState extends State<SensorPage> {
     if (b.fluidType != null) steps.add(MapEntry('Fluidtyp', 'FLUID ${b.fluidType}'));
     if (b.capacity != null) steps.add(MapEntry('Kapazität', 'CAP ${b.capacity}'));
     if (b.instance != null) steps.add(MapEntry('Instanz', 'INST ${b.instance}'));
+    if (b.filter != null) {
+      steps.add(MapEntry('Glättung', 'FILT ${b.filter}'));
+    }
     if (b.calibrated && b.calValue != null) {
-      steps.add(MapEntry('Kalibrierung', 'CAL ${b.calValue}'));
+      // Ab Firmware 1.3.0 nimmt CAL den Nullpunkt als zweiten Wert mit
+      // (CAL max,offset). Ältere Firmware liest nur die Zahl bis zum Komma
+      // und ignoriert den Rest - das Kommando ist also abwärtskompatibel.
+      final ofs = b.calOffset != null ? ',${b.calOffset}' : '';
+      steps.add(MapEntry('Kalibrierung', 'CAL ${b.calValue}$ofs'));
     } else {
+      // CALRESET löscht nur die 100%-Marke; ohne Offset in der Sicherung
+      // auch den Nullpunkt zurücksetzen, damit der Sensor sauber im
+      // gesicherten Zustand landet (nur bei Firmware 1.3.0+).
       steps.add(const MapEntry('Kalibrierung', 'CALRESET'));
+      if (b.calOffset == null && c.supportsV13) {
+        steps.add(const MapEntry('Nullpunkt', 'CAL0RESET'));
+      }
     }
     if (b.name?.isNotEmpty == true) {
       steps.add(MapEntry('Name', 'NAME ${b.name}'));
@@ -1268,8 +1310,8 @@ class _SensorPageState extends State<SensorPage> {
               child: const Icon(Icons.settings),
             ),
             tooltip: c.updateAvailable
-                ? 'Einstellungen – Firmware-Update verfügbar'
-                : 'Einstellungen',
+                ? 'Wartung – Firmware-Update verfügbar'
+                : 'Wartung & Diagnose',
             onPressed: c.connected
                 ? () => setState(() => _showSettings = true)
                 : null,
@@ -1283,9 +1325,39 @@ class _SensorPageState extends State<SensorPage> {
   Widget _buildMainBody() {
     if (!c.connected) return _disconnectedHint();
     if (c.bootloaderMode) return _bootloaderCard();
+    // Live-Anzeige plus direkt erreichbare Einstellungen - das Zahnrad
+    // behält nur Update, Werksreset und das Log (Diagnose-Konsole).
     return ListView(
       padding: const EdgeInsets.fromLTRB(12, 12, 12, 24),
-      children: [_levelCard()],
+      children: [
+        _levelCard(),
+        const SizedBox(height: 12),
+        _section(
+          icon: Icons.tune,
+          title: 'Kalibrierung',
+          child: _calibBody(),
+        ),
+        _section(
+          icon: Icons.water_drop_outlined,
+          title: 'Tankform',
+          child: _tankFormBody(),
+        ),
+        _section(
+          icon: Icons.settings_outlined,
+          title: 'Konfiguration',
+          child: _configBody(),
+        ),
+        _section(
+          icon: Icons.save_outlined,
+          title: 'Sicherung',
+          child: _backupBody(),
+        ),
+        _section(
+          icon: Icons.bluetooth,
+          title: 'Modul & Name',
+          child: _moduleBody(),
+        ),
+      ],
     );
   }
 
@@ -1369,7 +1441,7 @@ class _SensorPageState extends State<SensorPage> {
             icon: const Icon(Icons.arrow_back),
             onPressed: () => setState(() => _showSettings = false),
           ),
-          title: Text('Einstellungen – $_title'),
+          title: Text('Wartung – $_title'),
           bottom: PreferredSize(
             preferredSize: const Size.fromHeight(30),
             child: _settingsStatusStrip(),
@@ -1379,34 +1451,26 @@ class _SensorPageState extends State<SensorPage> {
           padding: const EdgeInsets.fromLTRB(12, 12, 12, 24),
           children: [
             _section(
-              icon: Icons.settings_outlined,
-              title: 'Konfiguration',
-              child: _configBody(),
+              icon: Icons.system_update,
+              title: 'Firmware-Update',
+              child: _updateBody(),
+              initiallyExpanded: c.updateAvailable,
             ),
             _section(
-              icon: Icons.tune,
-              title: 'Kalibrierung',
-              child: _calibBody(),
+              icon: Icons.vertical_align_bottom,
+              title: 'Nullpunkt-Kalibrierung',
+              child: _zeroCalBody(),
             ),
             _section(
-              icon: Icons.water_drop_outlined,
-              title: 'Tankform',
-              child: _tankFormBody(),
-            ),
-            _section(
-              icon: Icons.save_outlined,
-              title: 'Sicherung',
-              child: _backupBody(),
-            ),
-            _section(
-              icon: Icons.bluetooth,
-              title: 'Modul',
-              child: _moduleBody(),
+              icon: Icons.restart_alt,
+              title: 'Werksreset',
+              child: _resetBody(),
             ),
             _section(
               icon: Icons.article_outlined,
-              title: 'Log',
+              title: 'Log & Konsole',
               child: _logBody(),
+              initiallyExpanded: true,
             ),
           ],
         ),
@@ -1599,6 +1663,7 @@ class _SensorPageState extends State<SensorPage> {
     required IconData icon,
     required String title,
     required Widget child,
+    bool initiallyExpanded = false,
   }) {
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
@@ -1607,6 +1672,7 @@ class _SensorPageState extends State<SensorPage> {
         title: Text(title, style: const TextStyle(fontWeight: FontWeight.w600)),
         childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
         expandedCrossAxisAlignment: CrossAxisAlignment.start,
+        initiallyExpanded: initiallyExpanded,
         children: [child],
       ),
     );
@@ -1639,6 +1705,78 @@ class _SensorPageState extends State<SensorPage> {
             () => _send('CAP ${_capCtrl.text.trim()}')),
         _fieldRow(_instCtrl, 'Instanz (0..15)',
             () => _send('INST ${_instCtrl.text.trim()}')),
+        const Divider(height: 24),
+        _filterBlock(),
+      ],
+    );
+  }
+
+  /// Glättung des Messwerts (EMA-Filter der Firmware, Kommando FILT).
+  Widget _filterBlock() {
+    final hint = Theme.of(context).hintColor;
+    final v13 = c.supportsV13;
+    // Zeitkonstante bei 100-ms-Messtakt: tau ~ -0,1 s / ln(anteil_alt)
+    String tau;
+    if (_filtSel <= 0) {
+      tau = 'aus';
+    } else {
+      final t = -0.1 / math.log(_filtSel / 1000.0);
+      tau = t >= 1 ? '≈ ${t.toStringAsFixed(1)} s' : '≈ ${(t * 1000).round()} ms';
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text('Glättung', style: TextStyle(fontWeight: FontWeight.w600)),
+        const SizedBox(height: 4),
+        Text(
+          'Dämpft schwappende Füllstände (Wellengang). 0 = aus, hohe Werte '
+          'glätten stark, machen die Anzeige aber träger.',
+          style: TextStyle(color: hint, fontSize: 13),
+        ),
+        Row(
+          children: [
+            Expanded(
+              child: Slider(
+                value: _filtSel.toDouble(),
+                min: 0,
+                max: 990,
+                divisions: 99,
+                label: '$_filtSel',
+                onChanged: v13
+                    ? (v) => setState(() {
+                          _filtSel = (v / 10).round() * 10;
+                          _filtTouched = true;
+                        })
+                    : null,
+              ),
+            ),
+            SizedBox(
+              width: 86,
+              child: Text('$_filtSel\n$tau',
+                  textAlign: TextAlign.right,
+                  style: const TextStyle(fontSize: 12)),
+            ),
+            const SizedBox(width: 8),
+            FilledButton.tonal(
+              onPressed: v13
+                  ? () async {
+                      await _send('FILT $_filtSel');
+                      _filtTouched = false; // Sensorwert wieder übernehmen
+                      await Future<void>.delayed(
+                          const Duration(milliseconds: 300));
+                      await c.requestFilt();
+                    }
+                  : null,
+              child: const Text('Senden'),
+            ),
+          ],
+        ),
+        if (v13 && c.filtValue != null)
+          Text('Im Sensor gespeichert: ${c.filtValue}',
+              style: TextStyle(fontSize: 12, color: hint)),
+        if (!v13)
+          Text('Braucht Firmware 1.3.0 oder neuer.',
+              style: TextStyle(fontSize: 12, color: hint)),
       ],
     );
   }
@@ -1671,6 +1809,9 @@ class _SensorPageState extends State<SensorPage> {
     final calibrated = c.status?.calibrated == true;
     final okColor = const Color(0xFF43A047);
     final hint = Theme.of(context).hintColor;
+    final v13 = c.supportsV13;
+    final raw = c.status?.rawPress;
+    final offset = c.zeroOffset;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1698,25 +1839,144 @@ class _SensorPageState extends State<SensorPage> {
             ],
           ),
         ),
+        if (v13 && raw != null) ...[
+          const SizedBox(height: 10),
+          _rawPressLine(raw, offset, hint),
+        ],
         const SizedBox(height: 12),
-        const Text('Tank vollständig füllen, dann »Als 100 % setzen«.',
+        const Text(
+            'Tank vollständig füllen, dann »Voll (100 %)« drücken. Die selten '
+            'nötige Nullpunkt-Kalibrierung (leerer Tank) liegt unter dem '
+            'Zahnrad oben rechts.',
             style: TextStyle(color: Colors.grey, fontSize: 13)),
         const SizedBox(height: 12),
         Row(
           children: [
-            FilledButton(
-              onPressed: () => _send('CAL100'),
-              child: const Text('Als 100 % setzen'),
+            Expanded(
+              child: FilledButton(
+                onPressed: () => _send('CAL100'),
+                child: const Text('Voll (100 %)'),
+              ),
             ),
             const SizedBox(width: 8),
-            OutlinedButton(
-              onPressed: () => _send('CALRESET'),
-              child: const Text('Zurücksetzen'),
+            Expanded(
+              child: OutlinedButton(
+                style: _resetButtonStyle(),
+                onPressed: () => _send('CALRESET'),
+                child: const Text('100%-Reset'),
+              ),
             ),
           ],
         ),
       ],
     );
+  }
+
+  /// Rohdruck-/Nullpunkt-Zeile (P-Feld) - in der Kalibrierkarte und in der
+  /// Nullpunkt-Sektion im Zahnrad. Expanded, damit nichts rechts überläuft.
+  Widget _rawPressLine(int raw, int? offset, Color hint) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(Icons.speed, size: 18, color: hint),
+        const SizedBox(width: 6),
+        Expanded(
+          child: Text(
+            'Rohdruck ${(raw / 1000).toStringAsFixed(2)} mBar'
+            '${offset != null ? '\nNullpunkt ${(offset / 1000).toStringAsFixed(2)} mBar' : ''}',
+            style: const TextStyle(
+                fontFamily: 'monospace',
+                fontSize: 13,
+                fontWeight: FontWeight.w600),
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// Leichter Rotton für Reset-Taster.
+  ButtonStyle _resetButtonStyle() {
+    final err = Theme.of(context).colorScheme.error;
+    return OutlinedButton.styleFrom(
+      foregroundColor: err.withValues(alpha: 0.85),
+      side: BorderSide(color: err.withValues(alpha: 0.45)),
+    );
+  }
+
+  /// Nullpunkt-Kalibrierung - im Zahnrad-Menü (wird selten gebraucht).
+  Widget _zeroCalBody() {
+    final hint = Theme.of(context).hintColor;
+    final v13 = c.supportsV13;
+    final raw = c.status?.rawPress;
+    final offset = c.zeroOffset;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Setzt den aktuell anliegenden Druck als 0 %. Nur bei LEEREM Tank '
+          'ausführen - danach bei vollem Tank die 100%-Kalibrierung. Selten '
+          'nötig, z. B. nach einem Sensortausch oder bei Nullpunkt-Drift. '
+          'Der Rohdruck muss nach der Kalibrierung etwa 0 zeigen.',
+          style: TextStyle(color: hint, fontSize: 13),
+        ),
+        if (v13 && raw != null) ...[
+          const SizedBox(height: 10),
+          _rawPressLine(raw, offset, hint),
+        ],
+        const SizedBox(height: 12),
+        Row(
+          children: [
+            Expanded(
+              child: FilledButton(
+                onPressed: v13 ? _confirmZeroCal : null,
+                child: const Text('Leer (0 %)'),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: OutlinedButton(
+                style: _resetButtonStyle(),
+                onPressed: v13 ? () => _send('CAL0RESET') : null,
+                child: const Text('Null-Reset'),
+              ),
+            ),
+          ],
+        ),
+        if (!v13) ...[
+          const SizedBox(height: 8),
+          Text('Braucht Firmware 1.3.0 oder neuer.',
+              style: TextStyle(fontSize: 12, color: hint)),
+        ],
+      ],
+    );
+  }
+
+  /// Sicherheitsabfrage und Nullpunkt-Kalibrierung (CAL0).
+  Future<void> _confirmZeroCal() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Nullpunkt setzen?'),
+        content: const Text(
+            'Der aktuell anliegende Druck wird als 0 % übernommen.\n\n'
+            'Der Tank muss dazu LEER sein (bzw. der Sensor drucklos). '
+            'Danach bei vollem Tank die 100%-Kalibrierung ausführen.'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Abbrechen')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Nullpunkt setzen')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    await _send('CAL0');
+    // Kurz warten und die Kalibrierwerte neu abfragen, damit der
+    // angezeigte Nullpunkt stimmt.
+    await Future<void>.delayed(const Duration(milliseconds: 400));
+    await c.requestCal();
   }
 
   Widget _tankFormBody() {
@@ -1880,7 +2140,7 @@ class _SensorPageState extends State<SensorPage> {
                 Expanded(
                   child: Text(
                     'Update verfügbar: V${c.latestVersion ?? ''} '
-                    '– unten „Aus GitHub-Releases".',
+                    '– über das Zahnrad oben rechts.',
                     style: TextStyle(
                         color: cs.onPrimaryContainer, fontSize: 13),
                   ),
@@ -1916,10 +2176,15 @@ class _SensorPageState extends State<SensorPage> {
             FilledButton(onPressed: _changeName, child: const Text('Ändern')),
           ],
         ),
-        const Divider(height: 24),
-        const Text('Firmware-Update (OTA)',
-            style: TextStyle(fontWeight: FontWeight.w600)),
-        const SizedBox(height: 4),
+      ],
+    );
+  }
+
+  /// Firmware-Update (OTA) - im Zahnrad-Menü.
+  Widget _updateBody() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
         const Text(
           'Firmware über Bluetooth übertragen. Der Sensor startet dazu neu und '
           'ist währenddessen nicht messbereit.',
@@ -1990,14 +2255,20 @@ class _SensorPageState extends State<SensorPage> {
           onPressed: _startFirmwareUpdate,
         ),
 
-        const Divider(height: 24),
-        // --- Werksreset ---
-        const Text('Werksreset',
-            style: TextStyle(fontWeight: FontWeight.w600)),
-        const SizedBox(height: 4),
+      ],
+    );
+  }
+
+  /// Werksreset - im Zahnrad-Menü.
+  Widget _resetBody() {
+    final cs = Theme.of(context).colorScheme;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
         const Text(
-          'Löscht Kalibrierung, Tankform, Konfiguration, Name und gespeicherte '
-          'NMEA2000-Adresse. Der Sensor startet danach neu.',
+          'Löscht Kalibrierung (100 % und Nullpunkt), Tankform, Konfiguration, '
+          'Name und gespeicherte NMEA2000-Adresse. Der Sensor startet danach '
+          'neu.',
           style: TextStyle(color: Colors.grey, fontSize: 13),
         ),
         const SizedBox(height: 8),
@@ -2262,21 +2533,70 @@ class _SensorPageState extends State<SensorPage> {
   }
 
   Widget _logBody() {
-    if (c.log.isEmpty) {
-      return const Text('–', style: TextStyle(color: Colors.grey));
-    }
+    final hint = Theme.of(context).hintColor;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
-      children: c.log
-          .take(12)
-          .map((m) => Padding(
-                padding: const EdgeInsets.symmetric(vertical: 1),
-                child: Text(m,
+      children: [
+        Text(
+          'Alle Nachrichten von und zum Sensor ("> gesendet", "< empfangen"). '
+          'Unten lassen sich Kommandos direkt eingeben, z. B. GET, CAL, FILT '
+          'oder VER - siehe BLE_Protokoll.md.',
+          style: TextStyle(color: hint, fontSize: 12),
+        ),
+        const SizedBox(height: 8),
+        Container(
+          height: 320,
+          width: double.infinity,
+          padding: const EdgeInsets.all(8),
+          decoration: BoxDecoration(
+            color: Theme.of(context).colorScheme.surfaceContainerHighest,
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: c.log.isEmpty
+              ? const Text('–', style: TextStyle(color: Colors.grey))
+              : ListView.builder(
+                  itemCount: c.log.length,
+                  itemBuilder: (_, i) => Text(
+                    c.log[i],
                     style: const TextStyle(
-                        fontFamily: 'monospace', fontSize: 12)),
-              ))
-          .toList(),
+                        fontFamily: 'monospace', fontSize: 12),
+                  ),
+                ),
+        ),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            Expanded(
+              child: TextField(
+                controller: _consoleCtrl,
+                textInputAction: TextInputAction.send,
+                onSubmitted: (_) => _consoleSend(),
+                decoration: const InputDecoration(
+                  labelText: 'Kommando senden',
+                  hintText: 'z. B. GET',
+                  border: OutlineInputBorder(),
+                  isDense: true,
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            FilledButton.tonal(
+              onPressed: _consoleSend,
+              child: const Icon(Icons.send, size: 18),
+            ),
+          ],
+        ),
+      ],
     );
+  }
+
+  /// Kommando aus dem Konsolenfeld senden (landet über [SensorConnection.send]
+  /// automatisch im Log).
+  Future<void> _consoleSend() async {
+    final cmd = _consoleCtrl.text.trim();
+    if (cmd.isEmpty) return;
+    _consoleCtrl.clear();
+    await _send(cmd);
   }
 }
 

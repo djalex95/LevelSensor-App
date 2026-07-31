@@ -11,12 +11,16 @@ class SensorStatus {
   final bool? calibrated; // 100%-Kalibrierung vorhanden
   final String? version; // Firmware-Version, z. B. "1.2.0"
   final int? hwVariant; // Hardware-Variante (Messprinzip): 1000=Druck V1,
-  // 1001=Druck V2, 1002=Ultraschall, 1003=Druck V2 flach. Grundlage für
-  // die passende Firmware-Auswahl beim Update (Cross-Flash-Schutz).
-  // null = altes STAT ohne HWV-Feld.
+  // 1001=Druck V2 ±10 kPa, 1003=Druck V2 flach ±1 kPa (siehe
+  // hwVariantNames). Grundlage für die passende Firmware-Auswahl beim
+  // Update (Cross-Flash-Schutz). null = altes STAT ohne HWV-Feld.
   final String? hwSuffix; // Platinen-Stand: Buchstabe hinter der Variante
   // (z. B. "A" aus "HWV=1003A"). Rein informativ, gleiche Firmware.
   // null = Firmware, die noch keinen Buchstaben meldet.
+  final int? rawPress; // ungefilterter, offsetkorrigierter Messdruck in µBar
+  // (Feld P, ab Firmware 1.3.0). null = ältere Firmware. Dient zugleich als
+  // Erkennung, ob der Sensor CAL0/FILT unterstützt.
+  final int? errorBits; // Fehlerbits (Feld E): 1=CAN, 2=I2C, 4=HW-Variante.
 
   const SensorStatus({
     this.level,
@@ -28,6 +32,8 @@ class SensorStatus {
     this.version,
     this.hwVariant,
     this.hwSuffix,
+    this.rawPress,
+    this.errorBits,
   });
 
   /// Parst `STAT;L=73.5;T=23.45;F=1;C=150;I=0;CAL=1;V=1.2.3-dev;HWV=1003A`.
@@ -58,6 +64,8 @@ class SensorStatus {
       version: map['V'],
       hwVariant: _hwvNumber(map['HWV']),
       hwSuffix: _hwvSuffix(map['HWV']),
+      rawPress: int.tryParse(map['P'] ?? ''),
+      errorBits: int.tryParse(map['E'] ?? ''),
     );
   }
 
@@ -109,14 +117,18 @@ bool? parseFactoryResetAck(String line) {
   return null;
 }
 
-/// Kalibrierwert aus der Antwort `CAL;<0/1>;<max_val>` (Kommando `CAL`).
-/// `max_val` ist der Rohdruck bei 100 % Füllstand. Null, wenn die Zeile keine
+/// Kalibrierwerte aus der Antwort `CAL;<0/1>;<max_val>[;<offset>]`
+/// (Kommando `CAL`). `max_val` ist der Rohdruck bei 100 % Füllstand,
+/// `offset` der Nullpunkt aus `CAL0` in µBar (ab Firmware 1.3.0; ältere
+/// Firmware sendet das Feld nicht -> null). Null, wenn die Zeile keine
 /// CAL-Antwort ist – `OK CAL …` und `OK CALRESET` matchen bewusst nicht.
 class CalibrationValue {
   final bool calibrated;
   final int maxVal;
+  final int? offset;
 
-  const CalibrationValue({required this.calibrated, required this.maxVal});
+  const CalibrationValue(
+      {required this.calibrated, required this.maxVal, this.offset});
 }
 
 CalibrationValue? parseCal(String line) {
@@ -129,16 +141,38 @@ CalibrationValue? parseCal(String line) {
   return CalibrationValue(
     calibrated: parts[0].trim() == '1',
     maxVal: max,
+    offset: parts.length > 2 ? int.tryParse(parts[2].trim()) : null,
   );
+}
+
+/// Neuer Nullpunkt aus der Bestätigung `OK CAL0 <offset>` (Kommando `CAL0`).
+/// Damit zeigt die App den Wert sofort, ohne extra CAL-Abfrage.
+/// Null bei anderen Zeilen; `OK CAL0RESET` matcht bewusst nicht.
+final RegExp _cal0AckRe = RegExp(r'OK CAL0 (-?\d+)');
+int? parseCal0Ack(String line) {
+  final m = _cal0AckRe.firstMatch(line);
+  return m == null ? null : int.tryParse(m.group(1)!);
+}
+
+/// Filterstärke aus der Antwort `FILT;<0..990>` (Kommando `FILT`).
+/// Anteil des alten Werts in Promille. Null, wenn die Zeile keine
+/// FILT-Antwort ist – `OK FILT …` matcht bewusst nicht.
+int? parseFilt(String line) {
+  final i = line.indexOf('FILT;');
+  if (i < 0) return null;
+  final v = int.tryParse(line.substring(i + 5).trim());
+  return (v != null && v >= 0 && v <= 990) ? v : null;
 }
 
 /// Klartextnamen der Hardware-Varianten (Messprinzip), gemeldet als `HWV`
 /// in der STAT-Zeile. Siehe ARCHITECTURE.md der Firmware.
 const Map<int, String> hwVariantNames = {
+  // Entspricht Core/Inc/version.h der Firmware. Eine Variante 1002
+  // (Ultraschall) ist dort nur als Idee vermerkt und existiert nicht -
+  // unbekannte Nummern zeigt hwVariantLabel als reine Zahl an.
   1000: 'Drucksensor V1',
   1001: 'Drucksensor V2 ±10 kPa',
-  1002: 'Ultraschall',
-  1003: 'Drucksensor V2 ±1 kPa',
+  1003: 'Drucksensor V2 flach ±1 kPa',
 };
 
 /// Anzeigetext für eine Variantennummer. Unbekannte Nummern werden als reine
@@ -174,6 +208,8 @@ class SensorBackup {
 
   final bool calibrated;
   final int? calValue; // max_val, Rohdruck bei 100 %
+  final int? calOffset; // Nullpunkt-Offset in µBar (CAL0, ab Firmware 1.3.0)
+  final int? filter; // EMA-Filter, Anteil alter Wert in Promille (FILT)
   final int? fluidType;
   final int? capacity;
   final int? instance;
@@ -188,6 +224,8 @@ class SensorBackup {
     this.hwSuffix,
     this.calibrated = false,
     this.calValue,
+    this.calOffset,
+    this.filter,
     this.fluidType,
     this.capacity,
     this.instance,
@@ -208,6 +246,8 @@ class SensorBackup {
         'konfig': {
           'kalibriert': calibrated,
           'kalibrierwert': calValue,
+          'nullpunkt_offset': calOffset,
+          'filter_promille': filter,
           'fluidtyp': fluidType,
           'kapazitaet_liter': capacity,
           'instanz': instance,
@@ -270,6 +310,8 @@ class SensorBackup {
       hwSuffix: src['hw_platine'] as String?,
       calibrated: cfg['kalibriert'] == true,
       calValue: range('kalibrierwert', 1, 1000000),
+      calOffset: range('nullpunkt_offset', -30000, 30000),
+      filter: range('filter_promille', 0, 990),
       fluidType: range('fluidtyp', 0, 15),
       capacity: range('kapazitaet_liter', 1, 255),
       instance: range('instanz', 0, 15),

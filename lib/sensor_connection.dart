@@ -63,7 +63,11 @@ class SensorConnection extends ChangeNotifier {
   SensorStatus? status; // letzter STAT (bleibt bei Trennung als "zuletzt" stehen)
   String? sensorName; // im Sensor gespeicherter Name (NAME-Abfrage)
   List<int>? linCurve; // Tankform-Kennlinie
-  CalibrationValue? calValue; // Kalibrierwert (CAL-Abfrage), für die Sicherung
+  CalibrationValue? calValue; // Kalibrierwerte (CAL-Abfrage), inkl. Nullpunkt
+  int? zeroOffset; // Nullpunkt in µBar - aus der CAL-Antwort ODER direkt aus
+  // der Bestätigung "OK CAL0 <n>" (so zeigt die UI den Wert sofort an)
+  int? filtValue; // EMA-Filterstärke (FILT-Abfrage), Promille Altanteil
+  bool _v13Queried = false; // CAL/FILT nach dem ersten 1.3.0-STAT abgefragt
   bool bootloaderMode = false;
   String? bootloaderVersion;
   int? rssi;
@@ -76,6 +80,10 @@ class SensorConnection extends ChangeNotifier {
 
   /// Wird beim ersten STAT mit Versionsnummer je Verbindung aufgerufen.
   void Function(SensorConnection)? onVersion;
+
+  /// true, wenn die Firmware die 1.3.0-Funktionen kann (CAL0, FILT, P-Feld).
+  /// Erkannt am P-Feld der STAT-Zeile - das gibt es genau ab 1.3.0.
+  bool get supportsV13 => status?.rawPress != null;
 
   StreamSubscription<String>? _lineSub;
   StreamSubscription<bool>? _connSub;
@@ -161,6 +169,34 @@ class SensorConnection extends ChangeNotifier {
     }
   }
 
+  /// Nullpunkt und Filterstärke nacheinander abfragen (die Firmware hat
+  /// einen einzelnen Kommandopuffer - zwischen den Kommandos etwas Luft).
+  Future<void> _queryV13() async {
+    try {
+      await send('CAL');
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+      await send('FILT');
+    } catch (_) {}
+  }
+
+  /// Wartet auf die Antwort der laufenden FILT-Abfrage (siehe [requestFilt]).
+  Completer<int>? _filtWaiter;
+
+  /// Fragt die Filterstärke ab und wartet auf die Antwort.
+  /// Null = keine Antwort (Firmware vor 1.3.0 oder Verbindung weg).
+  Future<int?> requestFilt(
+      {Duration timeout = const Duration(seconds: 3)}) async {
+    _filtWaiter = Completer<int>();
+    try {
+      await send('FILT');
+      return await _filtWaiter!.future.timeout(timeout);
+    } catch (_) {
+      return null;
+    } finally {
+      _filtWaiter = null;
+    }
+  }
+
   /// Kommando senden und im Log vermerken. Wirft bei Sendefehler.
   Future<void> send(String cmd) async {
     addLog('> $cmd');
@@ -168,8 +204,15 @@ class SensorConnection extends ChangeNotifier {
   }
 
   void addLog(String msg) {
+    if (kDebugMode) {
+      // Im Debug-Lauf (flutter run) den kompletten BLE-Verkehr mit
+      // Zeitstempel ins Terminal spiegeln - zum Nachvollziehen von
+      // Timing-Fragen (z. B. CAL0 -> OK CAL0).
+      final t = DateTime.now().toIso8601String().substring(11, 23);
+      debugPrint('[BLE $t] [$displayName] $msg');
+    }
     log.insert(0, msg);
-    if (log.length > 40) log.removeLast();
+    if (log.length > 300) log.removeLast();
     notifyListeners();
   }
 
@@ -198,11 +241,17 @@ class SensorConnection extends ChangeNotifier {
       bootloaderVersion = null;
       linCurve = null;
       sensorName = null;
+      filtValue = null;
+      zeroOffset = null;
+      _v13Queried = false;
     }
     notifyListeners();
   }
 
   void _onLine(String line) {
+    // Alles Empfangene ins Log - das Log-Fenster ist zugleich die
+    // Diagnose-Konsole. Die STAT-Flut begrenzt der Log-Puffer (300 Zeilen).
+    addLog('< $line');
     // Bootloader meldet sich mit "BLV;x.y.z" (statt STAT).
     if (line.startsWith('BLV')) {
       final parts = line.split(';');
@@ -220,12 +269,18 @@ class SensorConnection extends ChangeNotifier {
         updateChecked = true;
         onVersion?.call(this);
       }
+      // Ab Firmware 1.3.0 (P-Feld vorhanden): Nullpunkt und Filterstärke
+      // einmal je Verbindung abfragen, damit die Anzeige gefüllt ist.
+      if (!_v13Queried && st.rawPress != null) {
+        _v13Queried = true;
+        _queryV13();
+      }
       return;
     }
     final lin = parseLin(line);
     if (lin != null) {
       linCurve = lin;
-      addLog('Kennlinie: ${lin.join(",")}');
+      notifyListeners();
       return;
     }
     // Antwort auf die CAL-Abfrage. Muss vor der allgemeinen Log-Ausgabe
@@ -233,8 +288,32 @@ class SensorConnection extends ChangeNotifier {
     final cal = parseCal(line);
     if (cal != null) {
       calValue = cal;
+      if (cal.offset != null) zeroOffset = cal.offset;
       if (_calWaiter != null && !_calWaiter!.isCompleted) {
         _calWaiter!.complete(cal);
+      }
+      notifyListeners();
+      return;
+    }
+    // Bestätigungen der Nullpunkt-Kommandos: Offset direkt übernehmen,
+    // ohne auf eine eigene CAL-Abfrage zu warten.
+    final z = parseCal0Ack(line);
+    if (z != null) {
+      zeroOffset = z;
+      notifyListeners();
+      return;
+    }
+    if (line.contains('OK CAL0RESET')) {
+      zeroOffset = 0;
+      notifyListeners();
+      return;
+    }
+    // Antwort auf die FILT-Abfrage ("OK FILT …" matcht bewusst nicht).
+    final filt = parseFilt(line);
+    if (filt != null) {
+      filtValue = filt;
+      if (_filtWaiter != null && !_filtWaiter!.isCompleted) {
+        _filtWaiter!.complete(filt);
       }
       notifyListeners();
       return;
@@ -251,7 +330,7 @@ class SensorConnection extends ChangeNotifier {
       notifyListeners();
       return;
     }
-    addLog(line);
+    // Schon oben ins Log übernommen - hier nichts weiter zu tun.
   }
 
   void _startRssi() {
