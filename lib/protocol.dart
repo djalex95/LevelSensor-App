@@ -1,5 +1,6 @@
 /// Parsen und Erzeugen der Textnachrichten des Füllstandsensors.
 /// Siehe PC_Tools/BLE_Protokoll.md für die vollständige Spezifikation.
+library;
 
 /// Dekodierter Status aus einer `STAT;...`-Zeile.
 class SensorStatus {
@@ -142,6 +143,27 @@ CalibrationValue? parseCal(String line) {
     calibrated: parts[0].trim() == '1',
     maxVal: max,
     offset: parts.length > 2 ? int.tryParse(parts[2].trim()) : null,
+  );
+}
+
+/// Antwort auf das Diagnose-Kommando `BONDS`: `BONDS;<anzahl>;SEC=<status>`.
+/// anzahl = im Modul gespeicherte Kopplungen, status = letzter per
+/// CMD_SECURITY_IND gemeldeter Zustand (0 = wiedererkannt, 1 = neu
+/// gebondet, 255 = noch keiner). Null bei anderen Zeilen.
+class BondsInfo {
+  final int count;
+  final int secState;
+
+  const BondsInfo({required this.count, required this.secState});
+}
+
+final RegExp _bondsRe = RegExp(r'BONDS;(\d+);SEC=(\d+)');
+BondsInfo? parseBonds(String line) {
+  final m = _bondsRe.firstMatch(line);
+  if (m == null) return null;
+  return BondsInfo(
+    count: int.parse(m.group(1)!),
+    secState: int.parse(m.group(2)!),
   );
 }
 

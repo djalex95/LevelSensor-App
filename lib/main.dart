@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io' show File, Platform;
 import 'dart:math' as math;
-import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
@@ -641,6 +640,9 @@ class _SensorPageState extends State<SensorPage> {
   // Eingabefeld der Log-Konsole (Zahnrad -> Log).
   final TextEditingController _consoleCtrl = TextEditingController();
 
+  // Eingabefeld für die Kopplungs-PIN (Zahnrad -> Sicherheit).
+  final TextEditingController _pinCtrl = TextEditingController();
+
   // Firmware-Releases aus GitHub (öffentliches Repo).
   static const _fwRepo = GithubReleases('djalex95', 'LevelsensorV1');
   List<FirmwareAsset> _fwAssets = [];
@@ -704,6 +706,7 @@ class _SensorPageState extends State<SensorPage> {
     _nameCtrl.dispose();
     _nameFocus.dispose();
     _consoleCtrl.dispose();
+    _pinCtrl.dispose();
     for (final ctrl in _heightCtrls) {
       ctrl.dispose();
     }
@@ -747,13 +750,15 @@ class _SensorPageState extends State<SensorPage> {
         title: const Text('Werksreset?'),
         content: const Text(
             'Setzt den Sensor auf Werkszustand zurück und löscht:\n\n'
-            '• 100%-Kalibrierung\n'
+            '• Kalibrierung (100 % und Nullpunkt), Glättung\n'
             '• Tankform-Kennlinie\n'
             '• Fluidtyp, Kapazität, Instanz\n'
             '• Sensorname (der Bluetooth-Name wird beim nächsten Start '
             'wieder „LevelSense-…")\n'
-            '• gespeicherte NMEA2000-Adresse\n\n'
-            'Der Sensor startet danach neu und die Verbindung trennt sich.'),
+            '• gespeicherte NMEA2000-Adresse\n'
+            '• Kopplungs-PIN (wieder 123123) und alle Kopplungen\n\n'
+            'Der Sensor startet danach neu und die Verbindung trennt sich – '
+            'alle Geräte müssen sich neu koppeln.'),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(ctx, false),
@@ -800,6 +805,10 @@ class _SensorPageState extends State<SensorPage> {
       // Namens-Cache liefert sonst noch den alten).
       c.sensorName = null;
       widget.registry.refreshNamesFromScan();
+      /* Der Werksreset setzt die PIN auf 123123 zurück und löscht die
+       * Bonds im Modul – die Kopplung auf diesem Handy ist damit wertlos. */
+      await c.ble.forgetBond();
+      if (!mounted) return;
       _snack('Werksreset ausgeführt – der Sensor startet neu.');
       Navigator.of(context).popUntil((r) => r.isFirst); // zum Dashboard
     } else if (ok == false) {
@@ -1462,6 +1471,11 @@ class _SensorPageState extends State<SensorPage> {
               child: _zeroCalBody(),
             ),
             _section(
+              icon: Icons.lock_outline,
+              title: 'Sicherheit (Kopplungs-PIN)',
+              child: _securityBody(),
+            ),
+            _section(
               icon: Icons.restart_alt,
               title: 'Werksreset',
               child: _resetBody(),
@@ -1807,7 +1821,7 @@ class _SensorPageState extends State<SensorPage> {
 
   Widget _calibBody() {
     final calibrated = c.status?.calibrated == true;
-    final okColor = const Color(0xFF43A047);
+    const okColor = Color(0xFF43A047);
     final hint = Theme.of(context).hintColor;
     final v13 = c.supportsV13;
     final raw = c.status?.rawPress;
@@ -1949,6 +1963,122 @@ class _SensorPageState extends State<SensorPage> {
         ],
       ],
     );
+  }
+
+  /// Sicherheit: Kopplungs-PIN ändern + Bond-Diagnose (ab Firmware 2.0.0).
+  Widget _securityBody() {
+    final hint = Theme.of(context).hintColor;
+    final b = c.bondsInfo;
+    String bondText = '–';
+    if (b != null) {
+      final sec = switch (b.secState) {
+        0 => 'Kopplung wiedererkannt',
+        1 => 'neu gekoppelt',
+        255 => 'noch keine Meldung',
+        _ => 'Status ${b.secState}',
+      };
+      bondText = '${b.count} Gerät(e) im Modul gespeichert · $sec';
+    } else if (c.bondsUnsupported) {
+      bondText = 'Bond-Abfrage von dieser Funkmodul-Firmware nicht '
+          'unterstützt${c.moduleFw != null ? ' (Modul ${c.moduleFw})' : ''} – '
+          'für den Betrieb ohne Bedeutung.';
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Die Verbindung ist mit einer 6-stelligen Kopplungs-PIN gesichert '
+          '(ab Firmware 2.0.0; Werks-PIN 123123). Beim ersten Verbinden fragt '
+          'das Handy die PIN ab. Nach einer Änderung werden alle bestehenden '
+          'Kopplungen gelöscht – jedes Gerät muss sich neu koppeln, auch '
+          'dieses.',
+          style: TextStyle(color: hint, fontSize: 13),
+        ),
+        const SizedBox(height: 12),
+        Row(
+          children: [
+            Expanded(
+              child: TextField(
+                controller: _pinCtrl,
+                keyboardType: TextInputType.number,
+                maxLength: 6,
+                decoration: const InputDecoration(
+                  labelText: 'Neue PIN (6 Ziffern)',
+                  border: OutlineInputBorder(),
+                  isDense: true,
+                  counterText: '',
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            FilledButton(
+              onPressed: _confirmPinChange,
+              child: const Text('Ändern'),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        Row(
+          children: [
+            OutlinedButton.icon(
+              icon: const Icon(Icons.link, size: 18),
+              label: const Text('Bond-Status'),
+              onPressed: () => _send('BONDS'),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(bondText,
+                  style: TextStyle(fontSize: 12, color: hint)),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  /// Sicherheitsabfrage und PIN-Wechsel (Kommando PIN).
+  Future<void> _confirmPinChange() async {
+    final pin = _pinCtrl.text.trim();
+    if (pin.length != 6 || int.tryParse(pin) == null) {
+      _snack('Die PIN muss aus genau 6 Ziffern bestehen.');
+      return;
+    }
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Kopplungs-PIN ändern?'),
+        content: Text(
+            'Neue PIN: $pin\n\n'
+            'Der Sensor löscht dabei alle gespeicherten Kopplungen und '
+            'startet das Funkmodul neu – die Verbindung trennt sich. Beim '
+            'nächsten Verbinden fragt jedes Gerät die neue PIN ab.\n\n'
+            'Falls sich ein Gerät danach nicht koppeln will: dort in den '
+            'Bluetooth-Einstellungen den Sensor entfernen (die App macht '
+            'das auf diesem Gerät automatisch).'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Abbrechen')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('PIN ändern')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    await _send('PIN $pin');
+    _pinCtrl.clear();
+    /* Der Sensor startet jetzt neu und legt die neue PIN an. Der alte
+     * Android-Bond gehört zur alten PIN und macht den nächsten Versuch
+     * kaputt – deshalb gleich entfernen, sobald die Verbindung weg ist. */
+    await Future.delayed(const Duration(seconds: 2));
+    final gone = await c.ble.forgetBond();
+    if (!mounted) return;
+    _snack(gone
+        ? 'PIN geändert, alte Kopplung entfernt. Beim Neuverbinden fragt '
+            'das Handy die neue PIN ab.'
+        : 'PIN gesendet. Die Verbindung trennt sich gleich – beim '
+            'Neuverbinden die neue PIN eingeben.');
   }
 
   /// Sicherheitsabfrage und Nullpunkt-Kalibrierung (CAL0).
@@ -2440,7 +2570,7 @@ class _SensorPageState extends State<SensorPage> {
         ],
       ),
     );
-    if (confirm != true) return;
+    if (confirm != true || !mounted) return;
 
     final status = ValueNotifier<String>('Start …');
     final progress = ValueNotifier<double>(0);
@@ -2680,8 +2810,8 @@ class _LinChartPainter extends CustomPainter {
 class _SignalBars extends StatelessWidget {
   final int lit; // 0..5
   final Color color;
-  final double height;
-  const _SignalBars({required this.lit, required this.color, this.height = 16});
+  static const double height = 16;
+  const _SignalBars({required this.lit, required this.color});
 
   @override
   Widget build(BuildContext context) {

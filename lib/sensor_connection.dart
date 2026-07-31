@@ -67,6 +67,9 @@ class SensorConnection extends ChangeNotifier {
   int? zeroOffset; // Nullpunkt in µBar - aus der CAL-Antwort ODER direkt aus
   // der Bestätigung "OK CAL0 <n>" (so zeigt die UI den Wert sofort an)
   int? filtValue; // EMA-Filterstärke (FILT-Abfrage), Promille Altanteil
+  BondsInfo? bondsInfo; // Antwort der BONDS-Diagnose (Sicherheits-Sektion)
+  bool bondsUnsupported = false; // Modul-FW kennt CMD_GETBONDS nicht (1.0.0)
+  String? moduleFw; // Firmware des Funkmoduls (MODFW-Zeile der BONDS-Antwort)
   bool _v13Queried = false; // CAL/FILT nach dem ersten 1.3.0-STAT abgefragt
   bool bootloaderMode = false;
   String? bootloaderVersion;
@@ -243,6 +246,9 @@ class SensorConnection extends ChangeNotifier {
       sensorName = null;
       filtValue = null;
       zeroOffset = null;
+      bondsInfo = null;
+      bondsUnsupported = false;
+      moduleFw = null;
       _v13Queried = false;
     }
     notifyListeners();
@@ -305,6 +311,23 @@ class SensorConnection extends ChangeNotifier {
     }
     if (line.contains('OK CAL0RESET')) {
       zeroOffset = 0;
+      notifyListeners();
+      return;
+    }
+    final bonds = parseBonds(line);
+    if (bonds != null) {
+      bondsInfo = bonds;
+      bondsUnsupported = false;
+      notifyListeners();
+      return;
+    }
+    if (line.contains('ERR BONDS st=255')) {
+      bondsUnsupported = true;
+      notifyListeners();
+      return;
+    }
+    if (line.startsWith('MODFW;')) {
+      moduleFw = line.substring(6).trim();
       notifyListeners();
       return;
     }
