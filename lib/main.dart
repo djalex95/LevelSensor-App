@@ -10,13 +10,67 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'dfu.dart';
 import 'github_releases.dart';
 import 'protocol.dart';
 import 'sensor_connection.dart';
 
-void main() => runApp(const FuellstandApp());
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await DevMode.load();
+  runApp(const FuellstandApp());
+}
+
+// ======================================================================
+// Entwicklermodus
+// ======================================================================
+
+/// Schaltet die Diagnose-Anzeigen frei, die im Alltag niemand braucht und
+/// die mehr Schaden anrichten als helfen: die Konsole mit dem Freitextfeld,
+/// die Rohdruckanzeige und die Bond-Diagnose.
+///
+/// Freigeschaltet wird durch siebenmaliges Tippen auf die Versionszeile
+/// unten auf der Startseite - derselbe Griff wie bei Android. Der Zustand
+/// bleibt erhalten und laesst sich im Wartungsbildschirm wieder abschalten.
+///
+/// Bewusst KEINE Sperre fuer gefaehrliche Funktionen: Werksreset und
+/// PIN-Wechsel bleiben sichtbar, die gehoeren zum normalen Betrieb. Hier
+/// geht es nur darum, die Oberflaeche aufzuraeumen.
+class DevMode {
+  DevMode._();
+
+  static const String _prefKey = 'dev_mode';
+
+  /// Anzahl der noetigen Tipper auf die Versionszeile.
+  static const int tapsNeeded = 7;
+
+  static final ValueNotifier<bool> enabled = ValueNotifier<bool>(false);
+
+  static bool get on => enabled.value;
+
+  static Future<void> load() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      enabled.value = prefs.getBool(_prefKey) ?? false;
+    } catch (_) {
+      // Ohne gespeicherten Zustand startet die App im Kundenmodus - das ist
+      // die sichere Richtung, also kein Grund, den Start scheitern zu lassen.
+      enabled.value = false;
+    }
+  }
+
+  static Future<void> set(bool value) async {
+    enabled.value = value;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_prefKey, value);
+    } catch (_) {
+      // Nicht schlimm: der Modus gilt dann nur bis zum naechsten Start.
+    }
+  }
+}
 
 class FuellstandApp extends StatelessWidget {
   const FuellstandApp({super.key});
@@ -63,6 +117,12 @@ class _DashboardPageState extends State<DashboardPage>
   // im Hintergrund liegendes Handy den Sensor nicht dauerhaft belegt.
   static const _bgReleaseDelay = Duration(seconds: 15);
   Timer? _bgTimer;
+
+  // Siebenmal auf die Versionszeile tippen schaltet den Entwicklermodus
+  // frei. Der Zaehler faellt nach zwei Sekunden Pause zurueck, damit ein
+  // versehentliches Antippen nichts anhaeuft.
+  int _verTaps = 0;
+  Timer? _verTapTimer;
 
   // App-eigene Updates (APK) aus dem App-Repo.
   static const _appRepo = GithubAppUpdate('djalex95', 'LevelSensor-App');
@@ -123,10 +183,46 @@ class _DashboardPageState extends State<DashboardPage>
   @override
   void dispose() {
     _bgTimer?.cancel();
+    _verTapTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     _registry.removeListener(_onChange);
     _registry.dispose();
     super.dispose();
+  }
+
+  void _versionTapped() {
+    if (DevMode.on) return;
+    _verTapTimer?.cancel();
+    _verTapTimer = Timer(const Duration(seconds: 2), () => _verTaps = 0);
+    _verTaps++;
+    final left = DevMode.tapsNeeded - _verTaps;
+    if (left > 0) {
+      // Erst ab der Haelfte einen Hinweis geben, sonst stolpert jeder
+      // Kunde beim ersten Fehltipper darueber.
+      if (_verTaps >= 4) {
+        _devSnack('Noch $left Mal tippen');
+      }
+      return;
+    }
+    _verTaps = 0;
+    _verTapTimer?.cancel();
+    _verTapTimer = null;
+    DevMode.set(true).then((_) {
+      if (!mounted) return;
+      setState(() {});
+      _devSnack('Entwicklermodus eingeschaltet - Konsole, Rohdruck und '
+          'Bond-Diagnose sind jetzt sichtbar.');
+    });
+  }
+
+  void _devSnack(String msg) {
+    if (!mounted) return;
+    final m = ScaffoldMessenger.of(context);
+    m.clearSnackBars();
+    m.showSnackBar(SnackBar(
+      content: Text(msg),
+      duration: const Duration(seconds: 2),
+    ));
   }
 
   Future<void> _requestPermissions() async {
@@ -390,10 +486,16 @@ class _DashboardPageState extends State<DashboardPage>
       bottomNavigationBar: SafeArea(
         child: Padding(
           padding: const EdgeInsets.only(top: 2, bottom: 6),
-          child: Text(
-            'App-Version ${_appVersion ?? '–'}',
-            textAlign: TextAlign.center,
-            style: TextStyle(color: Theme.of(context).hintColor, fontSize: 12),
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: _versionTapped,
+            child: Text(
+              'App-Version ${_appVersion ?? '–'}'
+              '${DevMode.on ? '  ·  Entwicklermodus' : ''}',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                  color: Theme.of(context).hintColor, fontSize: 12),
+            ),
           ),
         ),
       ),
@@ -1480,12 +1582,19 @@ class _SensorPageState extends State<SensorPage> {
               title: 'Werksreset',
               child: _resetBody(),
             ),
-            _section(
-              icon: Icons.article_outlined,
-              title: 'Log & Konsole',
-              child: _logBody(),
-              initiallyExpanded: true,
-            ),
+            if (DevMode.on) ...[
+              _section(
+                icon: Icons.article_outlined,
+                title: 'Log & Konsole',
+                child: _logBody(),
+                initiallyExpanded: true,
+              ),
+              _section(
+                icon: Icons.developer_mode,
+                title: 'Entwicklermodus',
+                child: _devModeBody(),
+              ),
+            ],
           ],
         ),
       ),
@@ -1853,7 +1962,7 @@ class _SensorPageState extends State<SensorPage> {
             ],
           ),
         ),
-        if (v13 && raw != null) ...[
+        if (DevMode.on && v13 && raw != null) ...[
           const SizedBox(height: 10),
           _rawPressLine(raw, offset, hint),
         ],
@@ -1923,6 +2032,10 @@ class _SensorPageState extends State<SensorPage> {
     final v13 = c.supportsV13;
     final raw = c.status?.rawPress;
     final offset = c.zeroOffset;
+    // Ohne sichtbare Rohdruckzeile waere der Verweis darauf sinnlos.
+    final probe = DevMode.on
+        ? 'Der Rohdruck muss nach der Kalibrierung etwa 0 zeigen.'
+        : 'Der Füllstand muss danach 0 % zeigen.';
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1930,10 +2043,10 @@ class _SensorPageState extends State<SensorPage> {
           'Setzt den aktuell anliegenden Druck als 0 %. Nur bei LEEREM Tank '
           'ausführen - danach bei vollem Tank die 100%-Kalibrierung. Selten '
           'nötig, z. B. nach einem Sensortausch oder bei Nullpunkt-Drift. '
-          'Der Rohdruck muss nach der Kalibrierung etwa 0 zeigen.',
+          '$probe',
           style: TextStyle(color: hint, fontSize: 13),
         ),
-        if (v13 && raw != null) ...[
+        if (DevMode.on && v13 && raw != null) ...[
           const SizedBox(height: 10),
           _rawPressLine(raw, offset, hint),
         ],
@@ -2017,21 +2130,23 @@ class _SensorPageState extends State<SensorPage> {
             ),
           ],
         ),
-        const SizedBox(height: 12),
-        Row(
-          children: [
-            OutlinedButton.icon(
-              icon: const Icon(Icons.link, size: 18),
-              label: const Text('Bond-Status'),
-              onPressed: () => _send('BONDS'),
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Text(bondText,
-                  style: TextStyle(fontSize: 12, color: hint)),
-            ),
-          ],
-        ),
+        if (DevMode.on) ...[
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              OutlinedButton.icon(
+                icon: const Icon(Icons.link, size: 18),
+                label: const Text('Bond-Status'),
+                onPressed: () => _send('BONDS'),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(bondText,
+                    style: TextStyle(fontSize: 12, color: hint)),
+              ),
+            ],
+          ),
+        ],
       ],
     );
   }
@@ -2715,6 +2830,34 @@ class _SensorPageState extends State<SensorPage> {
               child: const Icon(Icons.send, size: 18),
             ),
           ],
+        ),
+      ],
+    );
+  }
+
+  /// Nur sichtbar, solange der Entwicklermodus läuft: der Weg zurück.
+  Widget _devModeBody() {
+    final hint = Theme.of(context).hintColor;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Der Entwicklermodus blendet die Konsole, die Rohdruckanzeige und '
+          'die Bond-Diagnose ein. Für den Betrieb wird nichts davon '
+          'gebraucht. Zum Wiedereinschalten siebenmal auf die Versionszeile '
+          'unten auf der Startseite tippen.',
+          style: TextStyle(color: hint, fontSize: 13),
+        ),
+        const SizedBox(height: 12),
+        OutlinedButton.icon(
+          icon: const Icon(Icons.visibility_off_outlined, size: 18),
+          label: const Text('Entwicklermodus ausschalten'),
+          onPressed: () async {
+            await DevMode.set(false);
+            if (!mounted) return;
+            setState(() => _showSettings = false);
+            _snack('Entwicklermodus ausgeschaltet');
+          },
         ),
       ],
     );
