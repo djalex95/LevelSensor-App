@@ -1,3 +1,51 @@
+## App 2.0.0
+
+Die Verbindung zum Sensor ist ab Firmware 2.0.0 mit einer Kopplungs-PIN
+gesichert. Die App führt durch die Kopplung, wechselt die PIN und räumt
+veraltete Kopplungen selbst weg. Außerdem sind die Diagnose-Anzeigen aus
+der Oberfläche verschwunden, die im Alltag niemand braucht.
+
+### Kopplungs-PIN
+- Neuer Abschnitt „Sicherheit (Kopplungs-PIN)" in den Einstellungen. Dort
+  lässt sich die sechsstellige PIN ändern; ab Werk ist es 123123. Vor dem
+  Senden fragt die App nach, weil der Sensor dabei alle gespeicherten
+  Kopplungen löscht und das Funkmodul neu startet.
+- Nach einem PIN-Wechsel und nach einem Werksreset entfernt die App die
+  Android-Kopplung zu diesem Sensor selbst. Ohne das gehört der
+  gespeicherte Bond noch zur alten PIN, und der nächste Verbindungsversuch
+  scheitert wortlos. Auf iOS geht das nicht - dort muss der Sensor von
+  Hand aus den Bluetooth-Einstellungen entfernt werden.
+- **Die App bricht die Kopplung nicht mehr ab, während der PIN-Dialog
+  offen steht.** Bisher lief ihr eigener Zeitgeber weiter, während das
+  Handy noch auf die Eingabe wartete; sie riss die Verbindung weg, bevor
+  die PIN überhaupt eingetippt werden konnte. Das war die Ursache der
+  endlosen Kopplungsversuche. Jetzt wartet sie, solange Android eine
+  Kopplung meldet, und wertet erst danach aus.
+- **Selbstheilung bei veralteter Kopplung.** Scheitert die
+  Verschlüsselung, löscht die App einmal je Verbindungsanlauf den
+  Android-Bond und versucht es erneut - das Modul fragt dann wieder nach
+  der PIN. Das greift genau in dem Fall, in dem das Handy noch einen Bond
+  hat, den das Modul nicht mehr kennt: nach PIN-Wechsel, nach Werksreset
+  oder wenn der Sensor mit einem anderen Gerät neu gekoppelt wurde.
+
+### Entwicklermodus
+- **Die Diagnose-Anzeigen sind im Normalbetrieb ausgeblendet:** der
+  Abschnitt „Log & Konsole" samt Eingabefeld, die Rohdruck-Zeile in den
+  beiden Kalibrierkarten und die Zeile „Bond-Status" unter Sicherheit.
+  Keine davon wird im Betrieb gebraucht, und das Konsolenfeld schickt
+  beliebige Kommandos an den Sensor.
+- Freigeschaltet wird durch siebenmaliges Tippen auf die Versionszeile
+  unten auf der Startseite. Ist der Modus an, steht das in der
+  Versionszeile, und ein eigener Abschnitt „Entwicklermodus" in den
+  Einstellungen schaltet ihn wieder ab. Der Zustand überlebt den
+  Neustart.
+- Werksreset und PIN-Wechsel bleiben sichtbar. Beides gehört zum
+  normalen Betrieb; hier ging es nur darum, die Oberfläche aufzuräumen.
+
+- Passend zu Sensor-Firmware 2.0.0; ältere Firmware wird weiter
+  unterstützt, dort entfällt der Abschnitt Sicherheit.
+- Intern: 68 Unit-Tests.
+
 ## App 1.4.9
 
 - **Update-Angebot nach Hardware-Variante gefiltert.** Die App bietet nur
