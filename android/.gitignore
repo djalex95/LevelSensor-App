@@ -1,5 +1,8 @@
 gradle-wrapper.jar
 /.gradle
+# Gradle-Ausgaben - gehoeren nicht ins Repo
+/build
+/app/build
 /captures/
 /gradlew
 /gradlew.bat
