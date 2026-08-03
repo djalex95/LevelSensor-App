@@ -1,4 +1,5 @@
 import java.util.Properties
+import java.util.Base64
 import java.io.FileInputStream
 
 plugins {
@@ -14,6 +15,37 @@ val keystoreProperties = Properties()
 val keystorePropertiesFile = rootProject.file("key.properties")
 if (keystorePropertiesFile.exists()) {
     keystoreProperties.load(FileInputStream(keystorePropertiesFile))
+}
+
+// Sicherheitsnetz gegen einen Play-Build mit eingeschaltetem In-App-Updater:
+// Flavor und --dart-define muessen zusammenpassen. Flutter reicht die
+// dart-defines als Property "dart-defines" (base64, kommagetrennt) an Gradle
+// weiter; fehlt sie oder aendert Flutter das Format, entfaellt die Pruefung.
+val dartDefines: List<String>? = (project.findProperty("dart-defines") as String?)?.let { raw ->
+    try {
+        raw.split(",")
+            .filter { it.isNotBlank() }
+            .map { String(Base64.getDecoder().decode(it.trim()), Charsets.UTF_8) }
+    } catch (e: Exception) {
+        null
+    }
+}
+if (dartDefines != null) {
+    val requestedTasks = gradle.startParameter.taskNames.joinToString(" ")
+    val flavor = when {
+        requestedTasks.contains("Play") -> "play"
+        requestedTasks.contains("Github") -> "github"
+        else -> null
+    }
+    val channel = dartDefines
+        .firstOrNull { it.startsWith("APP_CHANNEL=") }
+        ?.substringAfter("=") ?: "github"
+    if (flavor != null && flavor != channel) {
+        throw GradleException(
+            "Flavor '$flavor' passt nicht zu APP_CHANNEL='$channel'. " +
+            "Bitte mit  --flavor $flavor --dart-define=APP_CHANNEL=$flavor  bauen."
+        )
+    }
 }
 
 android {
@@ -32,6 +64,18 @@ android {
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+    }
+
+    // Zwei Verteilungskanaele mit derselben applicationId:
+    //   github - APK fuer die GitHub-Releases, mit In-App-Updater
+    //            (src/github/AndroidManifest.xml bringt REQUEST_INSTALL_PACKAGES)
+    //   play   - AAB fuer den Play Store, ohne In-App-Updater
+    // Der passende Dart-Schalter steckt in lib/build_config.dart und wird ueber
+    // --dart-define=APP_CHANNEL=... gesetzt.
+    flavorDimensions += "channel"
+    productFlavors {
+        create("github") { dimension = "channel" }
+        create("play") { dimension = "channel" }
     }
 
     signingConfigs {

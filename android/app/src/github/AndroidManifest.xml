@@ -1,0 +1,6 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Nur der GitHub-Build darf die heruntergeladene APK dem System-Installer
+         uebergeben. Im Play-Build fehlt die Berechtigung bewusst: Play verbietet
+         Selbst-Updates am Store vorbei. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+</manifest>

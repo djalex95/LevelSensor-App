@@ -10,6 +10,10 @@ name: Build & Release APK + AAB
 #   KEY_PASSWORD       - Key-Passwort
 #   KEY_ALIAS          - Alias (z. B. upload)
 # Fehlen sie, wird debug-signiert gebaut (APK bleibt nutzbar, AAB nicht Play-tauglich).
+#
+# Es werden zwei Varianten gebaut:
+#   APK (Flavor github) - mit In-App-Updater aus den GitHub-Releases
+#   AAB (Flavor play)   - ohne In-App-Updater, fuer den Play Store
 
 on:
   push:
@@ -60,16 +64,21 @@ jobs:
       - name: APK + AAB bauen
         run: |
           flutter pub get
-          flutter build apk --release
-          flutter build appbundle --release
+          # APK fuer GitHub: mit In-App-Updater
+          flutter build apk --release --flavor github --dart-define=APP_CHANNEL=github
+          # AAB fuer Play: ohne In-App-Updater (Play verbietet Selbst-Updates)
+          flutter build appbundle --release --flavor play --dart-define=APP_CHANNEL=play
 
       - name: Artefakte mit Version benennen
         run: |
           mkdir -p dist
-          cp build/app/outputs/flutter-apk/app-release.apk \
-             "dist/Fuellstandsensor-v${{ steps.ver.outputs.app }}-release.apk"
-          cp build/app/outputs/bundle/release/app-release.aab \
-             "dist/Fuellstandsensor-v${{ steps.ver.outputs.app }}.aab"
+          # Je Artefakttyp wird nur ein Flavor gebaut, der Fund ist eindeutig.
+          apk=$(find build/app/outputs -name '*.apk' | sort | head -n1 || true)
+          aab=$(find build/app/outputs -name '*.aab' | sort | head -n1 || true)
+          test -n "$apk" || { echo "::error::Keine APK gefunden"; exit 1; }
+          test -n "$aab" || { echo "::error::Kein AAB gefunden"; exit 1; }
+          cp "$apk" "dist/Fuellstandsensor-v${{ steps.ver.outputs.app }}-release.apk"
+          cp "$aab" "dist/Fuellstandsensor-v${{ steps.ver.outputs.app }}.aab"
 
       - name: Release veröffentlichen
         uses: softprops/action-gh-release@v2

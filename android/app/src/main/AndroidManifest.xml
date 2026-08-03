@@ -13,8 +13,9 @@
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
     <!-- Für den Firmware-Abruf aus den GitHub-Releases -->
     <uses-permission android:name="android.permission.INTERNET" />
-    <!-- Für den In-App-Updater (APK aus GitHub installieren) -->
-    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- REQUEST_INSTALL_PACKAGES steht nur im github-Flavor
+         (src/github/AndroidManifest.xml): der Play-Build darf sich nicht
+         selbst aktualisieren. -->
 
     <application
         android:label="LevelSense"
@@ -48,7 +49,8 @@
             android:name="flutterEmbedding"
             android:value="2" />
 
-        <!-- Teilt die heruntergeladene APK sicher mit dem System-Installer -->
+        <!-- Teilt die heruntergeladene APK sicher mit dem System-Installer
+             (nur im github-Flavor benutzt) -->
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

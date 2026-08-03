@@ -27,8 +27,45 @@ cd Fuellstandsensor-App
 flutter pub get
 
 # 2) Auf angeschlossenem Handy starten
-flutter run
+flutter run --flavor github --dart-define=APP_CHANNEL=github
 ```
+
+Der Flavor ist Pflicht, siehe naechster Abschnitt.
+
+## Build-Varianten
+
+Die App wird in zwei Varianten gebaut. Inhaltlich sind sie identisch, sie
+unterscheiden sich nur im In-App-Updater, der beim Start nach einer neueren
+APK im GitHub-Release sucht und sie auf Wunsch installiert.
+
+- `github` - APK fuer die GitHub-Releases, In-App-Updater aktiv.
+  Bringt ueber `android/app/src/github/AndroidManifest.xml` die Berechtigung
+  `REQUEST_INSTALL_PACKAGES` mit.
+- `play` - AAB fuer den Google Play Store, In-App-Updater abgeschaltet und
+  die Berechtigung nicht im Manifest. Play verbietet Apps, die sich am
+  Store-Update-Mechanismus vorbei selbst aktualisieren; dort kommen
+  App-Updates ueber den Store.
+
+Das Firmware-Update des Sensors (`.bin` ueber BLE) ist davon nicht betroffen
+und laeuft in beiden Varianten unveraendert.
+
+Der Schalter im Dart-Code steht in `lib/build_config.dart`
+(`BuildConfig.selfUpdate`). Weil er `const` ist, entfernt der Compiler den
+Updater im Play-Build vollstaendig. Flavor und `--dart-define` muessen
+zusammenpassen; `android/app/build.gradle.kts` bricht den Build sonst mit
+einer Meldung ab.
+
+```bash
+# GitHub-Variante
+flutter run --flavor github --dart-define=APP_CHANNEL=github
+flutter build apk --release --flavor github --dart-define=APP_CHANNEL=github
+
+# Play-Variante
+flutter build appbundle --release --flavor play --dart-define=APP_CHANNEL=play
+```
+
+Der Release-Workflow (`.github/workflows/release.yml`) baut beim Tag beides:
+die APK aus dem Flavor `github` und das AAB aus dem Flavor `play`.
 
 ## Berechtigungen
 

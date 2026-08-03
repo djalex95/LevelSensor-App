@@ -12,6 +12,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'build_config.dart';
 import 'dfu.dart';
 import 'github_releases.dart';
 import 'protocol.dart';
@@ -124,7 +125,8 @@ class _DashboardPageState extends State<DashboardPage>
   int _verTaps = 0;
   Timer? _verTapTimer;
 
-  // App-eigene Updates (APK) aus dem App-Repo.
+  // App-eigene Updates (APK) aus dem App-Repo. Nur im GitHub-Build,
+  // siehe BuildConfig.selfUpdate.
   static const _appRepo = GithubAppUpdate('djalex95', 'LevelSensor-App');
   static const MethodChannel _installerChannel = MethodChannel('app/installer');
 
@@ -175,7 +177,9 @@ class _DashboardPageState extends State<DashboardPage>
   Future<void> _init() async {
     await _requestPermissions();
     _loadAppVersion();
-    _checkAppUpdate(); // unabhängig von den Sensorverbindungen, parallel
+    if (BuildConfig.selfUpdate) {
+      _checkAppUpdate(); // unabhängig von den Sensorverbindungen, parallel
+    }
     await _registry.load();
     _registry.start(); // alle bekannten Sensoren verbinden + Auto-Reconnect
   }
@@ -247,6 +251,9 @@ class _DashboardPageState extends State<DashboardPage>
 
   /// Beim Start prüfen, ob im App-Repo eine neuere App-Version (APK) liegt,
   /// und bei Zustimmung herunterladen + Installer öffnen (nur Android/Sideload).
+  ///
+  /// Wird nur im GitHub-Build aufgerufen (BuildConfig.selfUpdate); der
+  /// Play-Build bekommt seine Updates aus dem Store.
   Future<void> _checkAppUpdate() async {
     if (!Platform.isAndroid) return;
     try {

@@ -1,0 +1,19 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "LevelSense (GitHub-Build, mit In-App-Updater)",
+            "request": "launch",
+            "type": "dart",
+            "program": "lib/main.dart",
+            "args": ["--flavor", "github", "--dart-define=APP_CHANNEL=github"]
+        },
+        {
+            "name": "LevelSense (Play-Build, ohne In-App-Updater)",
+            "request": "launch",
+            "type": "dart",
+            "program": "lib/main.dart",
+            "args": ["--flavor", "play", "--dart-define=APP_CHANNEL=play"]
+        }
+    ]
+}
