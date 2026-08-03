@@ -1,3 +1,18 @@
+## App 2.0.1
+
+Reine Bau-Änderung, an der App selbst ändert sich nichts. Die APK hier
+im GitHub-Release verhält sich wie 2.0.0.
+
+- Die App wird ab jetzt in zwei Varianten gebaut. Die GitHub-Variante
+  meldet sich wie bisher selbst, wenn eine neuere Version vorliegt. Der
+  Play-Store-Variante fehlt dieser In-App-Updater, weil Play
+  Selbst-Updates am Store vorbei verbietet; dort kommen die Updates aus
+  dem Store. Sie fordert dafür auch die Berechtigung zum Installieren
+  von Apps nicht mehr an.
+- Das Firmware-Update des Sensors ist davon nicht betroffen und läuft in
+  beiden Varianten unverändert.
+- Intern: 68 Unit-Tests.
+
 ## App 2.0.0
 
 Die Verbindung zum Sensor ist ab Firmware 2.0.0 mit einer Kopplungs-PIN
