@@ -75,6 +75,68 @@ class DevMode {
   }
 }
 
+/// Zeigt das dauerhafte Verbindungsprotokoll (neueste Zeile oben).
+///
+/// Bewusst nicht an eine Seite gebunden: gerade wenn die Kopplung streikt,
+/// laesst sich die Sensorseite nicht oeffnen - erreichbar sein muss das
+/// Protokoll aber genau dann.
+Future<void> showConnLogDialog(BuildContext context) async {
+  final messenger = ScaffoldMessenger.of(context);
+  await showDialog<void>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: const Text('Verbindungsprotokoll'),
+      content: SizedBox(
+        width: double.maxFinite,
+        height: 400,
+        child: ValueListenableBuilder<int>(
+          valueListenable: DebugLog.revision,
+          builder: (_, __, ___) {
+            final lines = DebugLog.lines.reversed.toList();
+            if (lines.isEmpty) {
+              return const Text('Noch nichts aufgezeichnet.');
+            }
+            return ListView.builder(
+              itemCount: lines.length,
+              itemBuilder: (_, i) => Padding(
+                padding: const EdgeInsets.symmetric(vertical: 2),
+                child: Text(
+                  lines[i],
+                  style: const TextStyle(fontSize: 11, fontFamily: 'monospace'),
+                ),
+              ),
+            );
+          },
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () async {
+            Navigator.pop(ctx);
+            await Clipboard.setData(ClipboardData(text: DebugLog.text));
+            messenger.showSnackBar(const SnackBar(
+                content: Text('Protokoll in die Zwischenablage kopiert')));
+          },
+          child: const Text('Kopieren'),
+        ),
+        TextButton(
+          onPressed: () async {
+            Navigator.pop(ctx);
+            await DebugLog.clear();
+            messenger.showSnackBar(
+                const SnackBar(content: Text('Protokoll geleert')));
+          },
+          child: const Text('Leeren'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(ctx),
+          child: const Text('Schließen'),
+        ),
+      ],
+    ),
+  );
+}
+
 class FuellstandApp extends StatelessWidget {
   const FuellstandApp({super.key});
 
@@ -484,6 +546,14 @@ class _DashboardPageState extends State<DashboardPage>
       appBar: AppBar(
         title: const Text('Füllstandsensor'),
         actions: [
+          // Im Entwicklermodus von hier aus erreichbar, weil die
+          // Sensorseite bei gestoerter Verbindung zu ist.
+          if (DevMode.on)
+            IconButton(
+              icon: const Icon(Icons.history),
+              tooltip: 'Verbindungsprotokoll',
+              onPressed: () => showConnLogDialog(context),
+            ),
           IconButton(
             icon: const Icon(Icons.add),
             tooltip: 'Sensor hinzufügen',
@@ -2844,63 +2914,10 @@ class _SensorPageState extends State<SensorPage> {
     );
   }
 
-  /// Das dauerhafte Verbindungsprotokoll anzeigen (neueste Zeile oben).
-  Future<void> _showConnLog() async {
-    await showDialog<void>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Verbindungsprotokoll'),
-        content: SizedBox(
-          width: double.maxFinite,
-          height: 400,
-          child: ValueListenableBuilder<int>(
-            valueListenable: DebugLog.revision,
-            builder: (_, __, ___) {
-              final lines = DebugLog.lines.reversed.toList();
-              if (lines.isEmpty) {
-                return const Text('Noch nichts aufgezeichnet.');
-              }
-              return ListView.builder(
-                itemCount: lines.length,
-                itemBuilder: (_, i) => Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 2),
-                  child: Text(
-                    lines[i],
-                    style: const TextStyle(
-                        fontSize: 11, fontFamily: 'monospace'),
-                  ),
-                ),
-              );
-            },
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () async {
-              Navigator.pop(ctx);
-              await Clipboard.setData(ClipboardData(text: DebugLog.text));
-              if (!mounted) return;
-              _snack('Protokoll in die Zwischenablage kopiert');
-            },
-            child: const Text('Kopieren'),
-          ),
-          TextButton(
-            onPressed: () async {
-              Navigator.pop(ctx);
-              await DebugLog.clear();
-              if (!mounted) return;
-              _snack('Protokoll geleert');
-            },
-            child: const Text('Leeren'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Schließen'),
-          ),
-        ],
-      ),
-    );
-  }
+  /// Das dauerhafte Verbindungsprotokoll anzeigen. Der Dialog selbst
+  /// steht ausserhalb der Klasse, damit ihn auch die Startseite oeffnen
+  /// kann - im Fehlerfall ist diese Seite hier nicht erreichbar.
+  Future<void> _showConnLog() => showConnLogDialog(context);
 
   /// Nur sichtbar, solange der Entwicklermodus läuft: der Weg zurück.
   Widget _devModeBody() {
