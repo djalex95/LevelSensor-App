@@ -1,3 +1,21 @@
+## App 2.1.2
+
+Schärft das Verbindungsprotokoll, nachdem der erste Blick darauf zwei
+Schwächen gezeigt hat.
+
+- **Keine erfundenen Trennungen mehr.** Der Zustandsstrom meldet beim
+  Abonnieren sofort den aktuellen Stand; das landete als „Verbindung
+  getrennt“ im Protokoll, noch bevor überhaupt eine Verbindung bestand.
+  Protokolliert wird eine Trennung jetzt nur, wenn vorher wirklich eine
+  Verbindung stand.
+- **Trennungen mit Grund.** Android liefert einen Code dazu; er
+  unterscheidet die Fälle, auf die es ankommt - vom Sensor beendet,
+  Funkstrecke weg oder Verschlüsselung gescheitert. Bisher sahen die im
+  Protokoll alle gleich aus.
+- Ein gelungener zweiter Anlauf steht jetzt als solcher da. Bisher folgte
+  auf „Verbindungsaufbau fehlgeschlagen“ wortlos „Verbunden und
+  eingerichtet“, was sich wie ein Widerspruch las.
+
 ## App 2.1.1
 
 - **Das Verbindungsprotokoll ist jetzt von der Startseite aus erreichbar**
