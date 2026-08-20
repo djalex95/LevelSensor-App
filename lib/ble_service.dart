@@ -51,6 +51,12 @@ class ProteusBle {
   /// PIN-Wechsel oder Werksreset) -> Verschlüsselung scheitert.
   bool _healTried = false;
 
+  /// Nur fuers Protokoll: erst wenn wirklich einmal eine Verbindung stand,
+  /// ist ein 'getrennt' eine Nachricht. Der Zustandsstrom meldet beim
+  /// Abonnieren sofort den aktuellen Stand - ohne diese Bremse stuenden im
+  /// Protokoll vor jedem Verbindungsversuch zwei sinnlose Trennungen.
+  bool _wasConnected = false;
+
   /// Verbindet mit [device]. Ab Firmware 2.0.0 ist die Schnittstelle mit
   /// Static-Passkey-Pairing gesichert: Android zeigt beim Aktivieren der
   /// Notifications automatisch den PIN-Dialog (das Bonding stößt der
@@ -85,11 +91,13 @@ class ProteusBle {
 
     _stateSub = device.connectionState.listen((state) async {
       if (state == BluetoothConnectionState.connected) {
+        _wasConnected = true;
         // Beim OS-autoConnect steht die Verbindung asynchron -> hier einrichten.
         if (_autoMode && !isConnected) {
           try {
             await _setup(device);
             _healTried = false;
+            DebugLog.add('Verbunden und eingerichtet (autoConnect)');
             _connectedController.add(true);
           } catch (e) {
             DebugLog.add('Einrichtung nach autoConnect fehlgeschlagen: $e');
@@ -99,13 +107,22 @@ class ProteusBle {
             try {
               if (await _recover(device)) {
                 _healTried = false;
+                DebugLog.add('Zweiter Anlauf erfolgreich (autoConnect)');
                 _connectedController.add(true);
               }
             } catch (_) {}
           }
         }
       } else if (state == BluetoothConnectionState.disconnected) {
-        DebugLog.add('Verbindung getrennt');
+        if (_wasConnected) {
+          /* Der Grund unterscheidet die Faelle, auf die es ankommt: vom
+           * Sensor beendet, Funkstrecke weg oder Verschluesselung
+           * gescheitert sehen im Protokoll sonst gleich aus. */
+          final r = device.disconnectReason;
+          DebugLog.add('Verbindung getrennt'
+              '${r == null ? '' : ' (Grund ${r.code}: ${r.description})'}');
+          _wasConnected = false;
+        }
         _cleanup();
         _connectedController.add(false);
       }
@@ -128,6 +145,7 @@ class ProteusBle {
       if (!await _recover(device)) {
         rethrow;
       }
+      DebugLog.add('Zweiter Anlauf erfolgreich');
     }
     _healTried = false;
     DebugLog.add('Verbunden und eingerichtet');
