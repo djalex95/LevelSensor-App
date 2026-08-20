@@ -7,6 +7,7 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'ble_service.dart';
+import 'debug_log.dart';
 import 'github_releases.dart';
 import 'protocol.dart';
 
@@ -110,6 +111,7 @@ class SensorConnection extends ChangeNotifier {
       if (auto) _autoSince = DateTime.now();
       _retryAfter = null;
     } catch (e) {
+      DebugLog.add('Sensor $id: Verbindungsversuch gescheitert: $e');
       _retryAfter = DateTime.now().add(const Duration(seconds: 8));
       rethrow;
     } finally {

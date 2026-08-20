@@ -13,6 +13,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'build_config.dart';
+import 'debug_log.dart';
 import 'dfu.dart';
 import 'github_releases.dart';
 import 'protocol.dart';
@@ -21,6 +22,7 @@ import 'sensor_connection.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await DevMode.load();
+  await DebugLog.load();
   runApp(const FuellstandApp());
 }
 
@@ -2842,6 +2844,64 @@ class _SensorPageState extends State<SensorPage> {
     );
   }
 
+  /// Das dauerhafte Verbindungsprotokoll anzeigen (neueste Zeile oben).
+  Future<void> _showConnLog() async {
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Verbindungsprotokoll'),
+        content: SizedBox(
+          width: double.maxFinite,
+          height: 400,
+          child: ValueListenableBuilder<int>(
+            valueListenable: DebugLog.revision,
+            builder: (_, __, ___) {
+              final lines = DebugLog.lines.reversed.toList();
+              if (lines.isEmpty) {
+                return const Text('Noch nichts aufgezeichnet.');
+              }
+              return ListView.builder(
+                itemCount: lines.length,
+                itemBuilder: (_, i) => Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 2),
+                  child: Text(
+                    lines[i],
+                    style: const TextStyle(
+                        fontSize: 11, fontFamily: 'monospace'),
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () async {
+              Navigator.pop(ctx);
+              await Clipboard.setData(ClipboardData(text: DebugLog.text));
+              if (!mounted) return;
+              _snack('Protokoll in die Zwischenablage kopiert');
+            },
+            child: const Text('Kopieren'),
+          ),
+          TextButton(
+            onPressed: () async {
+              Navigator.pop(ctx);
+              await DebugLog.clear();
+              if (!mounted) return;
+              _snack('Protokoll geleert');
+            },
+            child: const Text('Leeren'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Schließen'),
+          ),
+        ],
+      ),
+    );
+  }
+
   /// Nur sichtbar, solange der Entwicklermodus läuft: der Weg zurück.
   Widget _devModeBody() {
     final hint = Theme.of(context).hintColor;
@@ -2853,6 +2913,20 @@ class _SensorPageState extends State<SensorPage> {
           'die Bond-Diagnose ein. Für den Betrieb wird nichts davon '
           'gebraucht. Zum Wiedereinschalten siebenmal auf die Versionszeile '
           'unten auf der Startseite tippen.',
+          style: TextStyle(color: hint, fontSize: 13),
+        ),
+        const SizedBox(height: 12),
+        OutlinedButton.icon(
+          icon: const Icon(Icons.history, size: 18),
+          label: const Text('Verbindungsprotokoll'),
+          onPressed: _showConnLog,
+        ),
+        const SizedBox(height: 8),
+        Text(
+          'Das Protokoll haelt fest, wann verbunden, getrennt und gekoppelt '
+          'wurde - mit Uhrzeit und ueber den App-Neustart hinweg. Es ist der '
+          'Weg, um einer Kopplung nachzugehen, die erst nach Stunden '
+          'verschwindet.',
           style: TextStyle(color: hint, fontSize: 13),
         ),
         const SizedBox(height: 12),

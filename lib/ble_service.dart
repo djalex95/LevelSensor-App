@@ -4,6 +4,8 @@ import 'dart:convert';
 
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
+import 'debug_log.dart';
+
 /// Kapselt die BLE-Kommunikation mit dem Würth-Proteus-e-Modul
 /// (SPP-like Profil). Empfangene Notifications werden an `\n` in einzelne
 /// Textzeilen zerlegt und über [lines] ausgegeben.
@@ -27,6 +29,10 @@ class ProteusBle {
 
   StreamSubscription<List<int>>? _notifySub;
   StreamSubscription<BluetoothConnectionState>? _stateSub;
+  /* Nur fuers Protokoll: jeder Wechsel des Systembonds wird
+   * mitgeschrieben. Genau hier faellt auf, wenn ein Bond
+   * verschwindet, ohne dass jemand danach gefragt hat. */
+  StreamSubscription<BluetoothBondState>? _bondSub;
   String _buffer = '';
   bool _autoMode = false; // OS-autoConnect aktiv (schnelleres Wiederverbinden)
 
@@ -61,11 +67,21 @@ class ProteusBle {
     _device = device;
     _autoMode = autoConnect;
     _healTried = false;
+    DebugLog.add('Verbinden mit ${device.remoteId} '
+        '(autoConnect: $autoConnect)');
 
     /* evtl. alte Subscriptions lösen (z. B. beim Neuverbinden im DFU) */
     await _stateSub?.cancel();
     await _notifySub?.cancel();
+    await _bondSub?.cancel();
+    _bondSub = null;
     _buffer = '';
+
+    if (Platform.isAndroid) {
+      _bondSub = device.bondState.listen(
+          (st) => DebugLog.add('Systembond: ${st.name}'),
+          onError: (Object e) => DebugLog.add('Systembond-Fehler: $e'));
+    }
 
     _stateSub = device.connectionState.listen((state) async {
       if (state == BluetoothConnectionState.connected) {
@@ -75,7 +91,8 @@ class ProteusBle {
             await _setup(device);
             _healTried = false;
             _connectedController.add(true);
-          } catch (_) {
+          } catch (e) {
+            DebugLog.add('Einrichtung nach autoConnect fehlgeschlagen: $e');
             /* Einrichtung fehlgeschlagen - zweiter Anlauf (Pairing abwarten
              * bzw. alten Systembond löschen). Klappt auch der nicht, verbindet
              * das OS gleich von selbst erneut. */
@@ -88,6 +105,7 @@ class ProteusBle {
           }
         }
       } else if (state == BluetoothConnectionState.disconnected) {
+        DebugLog.add('Verbindung getrennt');
         _cleanup();
         _connectedController.add(false);
       }
@@ -106,11 +124,13 @@ class ProteusBle {
       await device.connect(timeout: const Duration(seconds: 15), mtu: null);
       await _setup(device);
     } catch (e) {
+      DebugLog.add('Verbindungsaufbau fehlgeschlagen: $e');
       if (!await _recover(device)) {
         rethrow;
       }
     }
     _healTried = false;
+    DebugLog.add('Verbunden und eingerichtet');
     _connectedController.add(true);
   }
 
@@ -232,9 +252,11 @@ class ProteusBle {
     if (device == null || !Platform.isAndroid) {
       return false;
     }
+    DebugLog.add('Systembond wird geloescht (PIN-Wechsel oder Werksreset)');
     try {
       await device.removeBond();
-    } catch (_) {
+    } catch (e) {
+      DebugLog.add('Systembond loeschen fehlgeschlagen: $e');
       return false;
     }
     _healTried = false;
@@ -254,9 +276,12 @@ class ProteusBle {
       }
     } catch (_) {}
     _healTried = true;
+    DebugLog.add('*** Selbstheilung: Systembond wird geloescht - '
+        'die naechste Verbindung fragt die PIN ab ***');
     try {
       await device.removeBond();
-    } catch (_) {
+    } catch (e) {
+      DebugLog.add('Systembond loeschen fehlgeschlagen: $e');
       return false;
     }
     try {
@@ -353,6 +378,7 @@ class ProteusBle {
   void dispose() {
     _stateSub?.cancel();
     _notifySub?.cancel();
+    _bondSub?.cancel();
     _lineController.close();
     _connectedController.close();
   }
