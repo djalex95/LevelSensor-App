@@ -1,3 +1,12 @@
+## App 2.1.1
+
+- **Das Verbindungsprotokoll ist jetzt von der Startseite aus erreichbar**
+  - im Entwicklermodus über das Uhr-Symbol oben rechts. Bisher lag es
+  nur in den Wartungseinstellungen des Sensors, und die öffnen sich nur
+  bei bestehender Verbindung. Ausgerechnet im Fehlerfall, dem das
+  Protokoll gilt, kam man also nicht heran.
+- Der bisherige Weg über Wartung → Entwicklermodus bleibt bestehen.
+
 ## App 2.1.0
 
 Nur Diagnose. Sichtbar ist die Neuerung ausschließlich im
