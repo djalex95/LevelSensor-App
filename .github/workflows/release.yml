@@ -42,6 +42,12 @@ jobs:
       - name: Tag == pubspec.yaml prüfen
         if: github.ref_type == 'tag'
         run: |
+          # Zwischen zwei Releases traegt die Version in pubspec.yaml ein
+          # -dev-Suffix. Wer das vor dem Tag vergisst, soll es hier lesen
+          # und nicht aus einem Vergleich zweier Nummern schliessen muessen.
+          case "${{ steps.ver.outputs.app }}" in
+            *-*) echo "::error::Version ${{ steps.ver.outputs.app }} in pubspec.yaml traegt noch ein Suffix. Vor dem Tag die reine Release-Nummer eintragen."; exit 1;;
+          esac
           test "${GITHUB_REF_NAME#v}" = "${{ steps.ver.outputs.app }}" \
             || { echo "::error::Tag ${GITHUB_REF_NAME} passt nicht zu version ${{ steps.ver.outputs.app }} in pubspec.yaml"; exit 1; }
 

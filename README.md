@@ -32,6 +32,21 @@ flutter run --flavor github --dart-define=APP_CHANNEL=github
 
 Der Flavor ist Pflicht, siehe naechster Abschnitt.
 
+## Versionsnummern
+
+Zwischen zwei Releases traegt `pubspec.yaml` die naechste Nummer mit
+`-dev`, zum Beispiel `2.1.3-dev+31`. So ist auf dem Handy an der
+Versionszeile sofort zu sehen, ob dort ein Zwischenstand oder ein Release
+laeuft, und es werden keine Nummern fuer jeden Zwischenschritt verbraucht.
+
+Zum Release wird das Suffix entfernt und die Nummer festgelegt - Fehler-
+korrektur als Patch, neue Funktion als Minor. Erst danach wird getaggt.
+Die Build-Nummer hinter dem Plus steigt bei jedem Stand, den ein Geraet zu
+sehen bekommt; der Play Store nimmt jede nur einmal an.
+
+Der Release-Workflow bricht ab, wenn zum Tag noch ein `-dev` in
+`pubspec.yaml` steht.
+
 ## Build-Varianten
 
 Die App wird in zwei Varianten gebaut. Inhaltlich sind sie identisch, sie
