@@ -1,3 +1,24 @@
+## App 2.1.0
+
+Nur Diagnose. Sichtbar ist die Neuerung ausschließlich im
+Entwicklermodus, am normalen Betrieb ändert sich nichts.
+
+- **Verbindungsprotokoll mit Uhrzeit, das den App-Neustart übersteht.**
+  Die Konsole zeigt nur, was seit dem letzten Start passiert ist; ein
+  Fehler, der erst nach Stunden auftritt, ist damit nicht zu fassen.
+  Das neue Protokoll schreibt in eine Datei und hält fest, wann
+  verbunden und getrennt wurde, wie jeder gescheiterte
+  Verbindungsversuch geendet hat, jeden Wechsel des Systembonds und
+  jedes Löschen einer Kopplung - die Selbstheilung mit einer eigenen,
+  auffälligen Zeile.
+- Zu finden im Entwicklermodus unter „Verbindungsprotokoll“, mit
+  Knöpfen zum Kopieren und Leeren. Es fasst 500 Zeilen, danach fallen
+  die ältesten heraus.
+- Gedacht für die Frage, warum ein gekoppeltes Handy nach etwa einem
+  Tag Betrieb wieder nach der PIN gefragt wird. Die Gegenprobe auf der
+  Sensorseite liefert Firmware 2.1.0 zusammen mit dem PC-Werkzeug 1.2.0.
+- Intern: 68 Unit-Tests.
+
 ## App 2.0.1
 
 Reine Bau-Änderung, an der App selbst ändert sich nichts. Die APK hier
