@@ -45,7 +45,7 @@ class SensorConnection extends ChangeNotifier {
   bool bondPromptSuppressed = false;
 
   /// Genug Fehlversuche mit demselben Muster, um den Nutzer zu fragen.
-  bool get staleBondSuspect => ble.staleBondStreak >= 3;
+  bool get staleBondSuspect => ble.staleBondSuspect;
 
   /// true, solange ein OS-autoConnect-Auftrag läuft. Das OS verbindet dann
   /// selbstständig – auch nach Abriss (schnelleres Wiederverbinden).
@@ -91,6 +91,11 @@ class SensorConnection extends ChangeNotifier {
 
   /// Wird beim ersten STAT mit Versionsnummer je Verbindung aufgerufen.
   void Function(SensorConnection)? onVersion;
+
+  /// Der Anzeigename hat sich geaendert und gehoert dauerhaft gemerkt.
+  /// Ohne das steht nach dem naechsten App-Start wieder der alte Name da:
+  /// gespeichert wird die Sensorliste nur von der Registry.
+  void Function(SensorConnection)? onNameChanged;
 
   /// true, wenn die Firmware die 1.3.0-Funktionen kann (CAL0, FILT, P-Feld).
   /// Erkannt am P-Feld der STAT-Zeile - das gibt es genau ab 1.3.0.
@@ -150,8 +155,17 @@ class SensorConnection extends ChangeNotifier {
     if (dfuRunning) return; // während OTA keine Kommandos einstreuen
     final d = device;
     if (d != null) {
+      /* Androids platformName kommt aus dem Cache und haelt nach einem
+       * Umbenennen hartnaeckig den alten Namen fest. Er taugt deshalb nur
+       * fuer einen Sensor, von dem wir noch gar keinen Namen kennen -
+       * sonst ueberschreibt er bei jedem Verbinden den richtigen, und im
+       * getrennten Zustand bleibt der alte stehen. Die Wahrheit liefert
+       * die NAME-Antwort ein paar Zeilen weiter unten. */
       final pn = d.platformName;
-      if (pn.isNotEmpty && pn != displayName) displayName = pn;
+      if (pn.isNotEmpty && (displayName.isEmpty || displayName == id)) {
+        displayName = pn;
+        onNameChanged?.call(this);
+      }
     }
     addLog('Verbunden mit $displayName');
     try {
@@ -357,8 +371,14 @@ class SensorConnection extends ChangeNotifier {
       // die Firmware haelt den BLE-Modulnamen damit synchron (Boot-Abgleich
       // + sofortiges Umbenennen). Androids platformName kann nach einem
       // Umbenennen noch den alten Namen aus dem Cache liefern - daher
-      // displayName hier nachziehen statt dem Cache zu glauben.
-      if (nm.isNotEmpty) displayName = nm;
+      // displayName hier nachziehen statt dem Cache zu glauben - und den
+      // neuen Namen gleich dauerhaft merken, sonst zeigt die Kachel im
+      // getrennten Zustand wieder den alten (sensorName gilt nur, solange
+      // die Verbindung steht).
+      if (nm.isNotEmpty && nm != displayName) {
+        displayName = nm;
+        onNameChanged?.call(this);
+      }
       notifyListeners();
       return;
     }
@@ -490,6 +510,9 @@ class SensorRegistry extends ChangeNotifier {
   SensorConnection _add(String id, String name) {
     final conn = SensorConnection(id: id, name: name.isNotEmpty ? name : id);
     conn.onVersion = _checkFirmwareUpdate;
+    conn.onNameChanged = (_) {
+      save();
+    };
     conn.addListener(notifyListeners);
     sensors.add(conn);
     return conn;

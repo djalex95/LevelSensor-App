@@ -56,6 +56,26 @@ class ProteusBle {
   /// die Oberflaeche fragt den Nutzer, sobald der Verdacht dicht genug ist.
   int staleBondStreak = 0;
 
+  /// Beginn der laufenden Fehlerserie.
+  DateTime? _staleSince;
+
+  /// Ab hier wird der Nutzer gefragt.
+  ///
+  /// Zwei Bedingungen, und die zweite ist die wichtigere. Android wirft im
+  /// Betrieb regelmaessig GATT_ERROR (133) oder GATT_INTERNAL_ERROR (129)
+  /// beim Einrichten - das sieht genauso aus wie eine veraltete Kopplung,
+  /// erledigt sich aber im naechsten Anlauf von selbst. Eine wirklich tote
+  /// Kopplung erledigt sich nie. Deshalb muss die Serie nicht nur lang
+  /// genug sein, sondern auch lange genug andauern; ein Erfolg dazwischen
+  /// setzt beides zurueck.
+  static const int _staleMinFails = 5;
+  static const Duration _staleMinAge = Duration(minutes: 2);
+
+  bool get staleBondSuspect =>
+      staleBondStreak >= _staleMinFails &&
+      _staleSince != null &&
+      DateTime.now().difference(_staleSince!) >= _staleMinAge;
+
   /// Stand in DIESEM Verbindungsversuch schon einmal eine Funkverbindung?
   bool _linkSeenThisAttempt = false;
 
@@ -105,7 +125,7 @@ class ProteusBle {
         if (_autoMode && !isConnected) {
           try {
             await _setup(device);
-            staleBondStreak = 0;
+            _clearStaleSuspicion();
             DebugLog.add('Verbunden und eingerichtet (autoConnect)');
             _connectedController.add(true);
           } catch (e) {
@@ -115,7 +135,7 @@ class ProteusBle {
              * das OS gleich von selbst erneut. */
             try {
               if (await _recover(device)) {
-                staleBondStreak = 0;
+                _clearStaleSuspicion();
                 DebugLog.add('Zweiter Anlauf erfolgreich (autoConnect)');
                 _connectedController.add(true);
               } else {
@@ -159,7 +179,7 @@ class ProteusBle {
       }
       DebugLog.add('Zweiter Anlauf erfolgreich');
     }
-    staleBondStreak = 0;
+    _clearStaleSuspicion();
     DebugLog.add('Verbunden und eingerichtet');
     _connectedController.add(true);
   }
@@ -177,6 +197,12 @@ class ProteusBle {
     return await _awaitBonded(device) && await _reconnectAndSetup(device);
   }
 
+  /// Ein geglueckter Anlauf raeumt den Verdacht restlos ab.
+  void _clearStaleSuspicion() {
+    staleBondStreak = 0;
+    _staleSince = null;
+  }
+
   /// Nach einem endgueltig gescheiterten Versuch: war es das Muster einer
   /// veralteten Kopplung? Nur dann steigt der Verdachtszaehler.
   Future<void> _noteFailedAttempt(BluetoothDevice device) async {
@@ -190,6 +216,7 @@ class ProteusBle {
     } catch (_) {
       return;
     }
+    _staleSince ??= DateTime.now();
     staleBondStreak++;
     DebugLog.add('Einrichtung gescheitert, obwohl die Funkverbindung stand - '
         'Verdacht auf veraltete Kopplung ($staleBondStreak in Folge)');
@@ -294,7 +321,7 @@ class ProteusBle {
       DebugLog.add('Systembond loeschen fehlgeschlagen: $e');
       return false;
     }
-    staleBondStreak = 0;
+    _clearStaleSuspicion();
     return true;
   }
 
