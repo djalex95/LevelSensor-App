@@ -1,3 +1,22 @@
+## App 2.2.1
+
+- **Die Nachfrage zur Kopplung springt nicht mehr auf Android-Macken an.**
+  Der erste Testlauf zeigte zwei Fehlschläge beim Einrichten (GATT-Fehler
+  129 und 133), die sich beide im nächsten Anlauf von selbst erledigten –
+  mit der alten Schwelle von drei Fehlern hätte die App irgendwann
+  angeboten, eine völlig intakte Kopplung wegzuwerfen. Jetzt braucht der
+  Verdacht fünf Fehlschläge in Folge **und** mindestens zwei Minuten Dauer.
+  Eine tote Kopplung erfüllt beides mühelos, eine Macke nicht.
+- Jeder geglückte Verbindungsaufbau setzt den Verdacht restlos zurück.
+- **Der Sensorname bleibt nach dem Umbenennen erhalten.** Bisher zeigte die
+  Kachel im getrennten Zustand wieder den alten Namen. Zwei Ursachen: der
+  neue Name wurde nur im Arbeitsspeicher geführt und nie gespeichert, und
+  bei jedem Verbinden überschrieb ihn Androids Namens-Cache, der nach einem
+  Umbenennen noch tagelang den alten Namen liefert. Jetzt gilt die
+  NAME-Antwort des Sensors als Wahrheit, sie wird sofort gespeichert, und
+  der Cache kommt nur noch bei einem Sensor zum Zug, von dem die App noch
+  gar keinen Namen kennt.
+
 ## App 2.2.0
 
 Die App löscht keine Kopplung mehr im Stillen, sondern fragt.
