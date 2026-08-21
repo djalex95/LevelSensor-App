@@ -1,3 +1,22 @@
+## App 2.2.0
+
+Die App löscht keine Kopplung mehr im Stillen, sondern fragt.
+
+- **Nachfrage statt Selbstheilung.** Scheitert die Verbindung dreimal
+  hintereinander am selben Muster – die Funkverbindung steht, die
+  Einrichtung läuft nicht durch –, meldet sich die App mit einem Fenster.
+  Erst auf „Kopplung erneuern“ wird die gespeicherte Kopplung entfernt;
+  danach fragt der Sensor wieder nach der PIN. Bisher tat die App das von
+  selbst, und wer nicht wusste warum, hielt die PIN-Abfrage für den Fehler.
+- Ein Sensor außer Reichweite löst die Nachfrage nicht aus. Gezählt wird
+  nur, was auch wirklich nach einer veralteten Kopplung aussieht.
+- „Später“ hält für die laufende Sitzung. Auf iOS lässt sich eine Kopplung
+  ohnehin nur in den Bluetooth-Einstellungen entfernen; das sagt die App
+  jetzt auch.
+- Passend dazu räumt Firmware 2.2.0 auf der Sensorseite auf: dort werden
+  Bonds nur noch beim Werksreset gelöscht.
+- Intern: 68 Unit-Tests.
+
 ## App 2.1.2
 
 Schärft das Verbindungsprotokoll, nachdem der erste Blick darauf zwei
