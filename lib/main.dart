@@ -189,6 +189,9 @@ class _DashboardPageState extends State<DashboardPage>
   int _verTaps = 0;
   Timer? _verTapTimer;
 
+  /// Es steht schon eine Nachfrage zur Kopplung offen.
+  bool _bondDialogOpen = false;
+
   // App-eigene Updates (APK) aus dem App-Repo. Nur im GitHub-Build,
   // siehe BuildConfig.selfUpdate.
   static const _appRepo = GithubAppUpdate('djalex95', 'LevelSensor-App');
@@ -236,6 +239,68 @@ class _DashboardPageState extends State<DashboardPage>
 
   void _onChange() {
     if (mounted) setState(() {});
+    _maybeAskStaleBond();
+  }
+
+  /// Fragt nach, wenn ein Sensor mehrfach hintereinander am selben Muster
+  /// gescheitert ist: Funkverbindung stand, Einrichtung nicht. Das deutet
+  /// auf eine Kopplung, die nur noch das Handy kennt.
+  ///
+  /// Frueher hat die App den Systembond in dieser Lage still geloescht.
+  /// Das Loeschen ist die richtige Reparatur, aber nichts, was hinter dem
+  /// Ruecken des Nutzers passieren sollte - danach fragt der Sensor wieder
+  /// nach der PIN, und wer nicht weiss warum, haelt das fuer einen Fehler.
+  Future<void> _maybeAskStaleBond() async {
+    if (_bondDialogOpen || !mounted) return;
+    SensorConnection? target;
+    for (final c in _registry.sensors) {
+      if (c.staleBondSuspect && !c.bondPromptSuppressed && !c.connected) {
+        target = c;
+        break;
+      }
+    }
+    if (target == null) return;
+    final c = target;
+    _bondDialogOpen = true;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Kopplung erneuern?'),
+        content: Text(
+            'Die Verbindung zu „${_tileName(c)}“ scheitert wiederholt, '
+            'obwohl der Sensor in Reichweite ist. Meist passt dann die auf '
+            'diesem Handy gespeicherte Kopplung nicht mehr zum Sensor – '
+            'etwa nach einem Werksreset oder einem PIN-Wechsel.\n\n'
+            'Beim Erneuern wird die gespeicherte Kopplung entfernt. Der '
+            'Sensor fragt danach wieder nach der PIN.'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Später')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Kopplung erneuern')),
+        ],
+      ),
+    );
+    _bondDialogOpen = false;
+    if (!mounted) return;
+    if (ok != true) {
+      c.bondPromptSuppressed = true;
+      return;
+    }
+    final gone = await c.ble.forgetBond();
+    if (!mounted) return;
+    if (!gone) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Die Kopplung liess sich nicht entfernen. Auf iOS '
+              'geht das nur in den Bluetooth-Einstellungen.')));
+      c.bondPromptSuppressed = true;
+      return;
+    }
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Kopplung entfernt – der Sensor fragt jetzt die PIN ab.')));
+    c.connect(manual: true).catchError((_) {});
   }
 
   Future<void> _init() async {

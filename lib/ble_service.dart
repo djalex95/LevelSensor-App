@@ -44,12 +44,20 @@ class ProteusBle {
 
   bool get isConnected => _rx != null && _tx != null;
 
-  /// Einmal je Verbindungsversuch: bei einem Einrichtungsfehler auf Android
-  /// den (vermutlich veralteten) Systembond löschen und neu koppeln. Das ist
-  /// der Selbstheiler für den klassischen Fehlerfall der PIN-Sicherheit:
-  /// Handy hat noch einen Bond, das Modul kennt ihn nicht mehr (z. B. nach
-  /// PIN-Wechsel oder Werksreset) -> Verschlüsselung scheitert.
-  bool _healTried = false;
+  /// Verdacht auf eine veraltete Kopplung: so oft hintereinander stand die
+  /// Funkverbindung, ohne dass die Einrichtung durchlief. Genau dieses
+  /// Muster erzeugt der klassische Fehlerfall der PIN-Sicherheit - das Handy
+  /// hat noch einen Bond, das Modul kennt ihn nicht mehr (nach PIN-Wechsel
+  /// oder Werksreset), die Verschlüsselung scheitert. Ein Sensor ausser
+  /// Reichweite zaehlt hier nicht mit, dort kommt gar keine Verbindung
+  /// zustande.
+  ///
+  /// Die App loescht deswegen von sich aus nichts mehr. Sie zaehlt nur, und
+  /// die Oberflaeche fragt den Nutzer, sobald der Verdacht dicht genug ist.
+  int staleBondStreak = 0;
+
+  /// Stand in DIESEM Verbindungsversuch schon einmal eine Funkverbindung?
+  bool _linkSeenThisAttempt = false;
 
   /// Nur fuers Protokoll: erst wenn wirklich einmal eine Verbindung stand,
   /// ist ein 'getrennt' eine Nachricht. Der Zustandsstrom meldet beim
@@ -72,7 +80,7 @@ class ProteusBle {
       {bool autoConnect = false}) async {
     _device = device;
     _autoMode = autoConnect;
-    _healTried = false;
+    _linkSeenThisAttempt = false;
     DebugLog.add('Verbinden mit ${device.remoteId} '
         '(autoConnect: $autoConnect)');
 
@@ -92,11 +100,12 @@ class ProteusBle {
     _stateSub = device.connectionState.listen((state) async {
       if (state == BluetoothConnectionState.connected) {
         _wasConnected = true;
+        _linkSeenThisAttempt = true;
         // Beim OS-autoConnect steht die Verbindung asynchron -> hier einrichten.
         if (_autoMode && !isConnected) {
           try {
             await _setup(device);
-            _healTried = false;
+            staleBondStreak = 0;
             DebugLog.add('Verbunden und eingerichtet (autoConnect)');
             _connectedController.add(true);
           } catch (e) {
@@ -106,9 +115,11 @@ class ProteusBle {
              * das OS gleich von selbst erneut. */
             try {
               if (await _recover(device)) {
-                _healTried = false;
+                staleBondStreak = 0;
                 DebugLog.add('Zweiter Anlauf erfolgreich (autoConnect)');
                 _connectedController.add(true);
+              } else {
+                await _noteFailedAttempt(device);
               }
             } catch (_) {}
           }
@@ -137,45 +148,51 @@ class ProteusBle {
       /* mtu: null -> die MTU fordert _setup selbst an (dort abgesichert).
        * Sonst macht flutter_blue_plus das intern noch in connect(), und ein
        * Abbruch dabei lässt connect() werfen, bevor _setup überhaupt
-       * läuft - dann greift keine Selbstheilung. */
+       * läuft - dann greift auch der zweite Anlauf nicht. */
       await device.connect(timeout: const Duration(seconds: 15), mtu: null);
       await _setup(device);
     } catch (e) {
       DebugLog.add('Verbindungsaufbau fehlgeschlagen: $e');
       if (!await _recover(device)) {
+        await _noteFailedAttempt(device);
         rethrow;
       }
       DebugLog.add('Zweiter Anlauf erfolgreich');
     }
-    _healTried = false;
+    staleBondStreak = 0;
     DebugLog.add('Verbunden und eingerichtet');
     _connectedController.add(true);
   }
 
   /// Zweiter Anlauf, nachdem der Verbindungsaufbau fehlgeschlagen ist.
   ///
-  /// Reihenfolge ist wichtig: Beim gesicherten Sensor ist der häufigste Grund
-  /// eine gerade erst gestartete Kopplung – dann nur warten. Bleibt es dabei,
-  /// passt der gespeicherte Systembond nicht mehr zum Modul (alte PIN,
-  /// Werksreset, gelöschte Modul-Bonds) und muss weg: Android verschlüsselt
-  /// sonst bei jedem Versuch mit dem alten Schluessel, das Modul antwortet
-  /// nicht mehr und der Link stirbt per Timeout – ohne jede Bond-Meldung.
+  /// Beim gesicherten Sensor ist der häufigste Grund eine gerade erst
+  /// gestartete Kopplung – dann hilft nur warten, bis Android sie
+  /// abgeschlossen hat. Bleibt es dabei, passt der gespeicherte Systembond
+  /// vermutlich nicht mehr zum Modul (alte PIN, Werksreset). Geloescht wird
+  /// er hier trotzdem nicht: das entscheidet der Nutzer, siehe
+  /// [staleBondStreak].
   /// true = Sensor ist eingerichtet und benutzbar.
   Future<bool> _recover(BluetoothDevice device) async {
-    if (await _awaitBonded(device) && await _reconnectAndSetup(device)) {
-      return true;
+    return await _awaitBonded(device) && await _reconnectAndSetup(device);
+  }
+
+  /// Nach einem endgueltig gescheiterten Versuch: war es das Muster einer
+  /// veralteten Kopplung? Nur dann steigt der Verdachtszaehler.
+  Future<void> _noteFailedAttempt(BluetoothDevice device) async {
+    if (!Platform.isAndroid || !_linkSeenThisAttempt) {
+      return; // gar keine Funkverbindung -> lag nicht an der Kopplung
     }
-    if (await _healBond(device)) {
-      if (await _reconnectAndSetup(device)) {
-        return true;
+    try {
+      if (await device.bondState.first != BluetoothBondState.bonded) {
+        return; // ohne gespeicherte Kopplung gibt es nichts zu erneuern
       }
-      /* Ohne Bond fragt das Modul jetzt die PIN ab – der erste Versuch
-       * danach scheitert regelmäßig mitten im Pairing. */
-      if (await _awaitBonded(device) && await _reconnectAndSetup(device)) {
-        return true;
-      }
+    } catch (_) {
+      return;
     }
-    return false;
+    staleBondStreak++;
+    DebugLog.add('Einrichtung gescheitert, obwohl die Funkverbindung stand - '
+        'Verdacht auf veraltete Kopplung ($staleBondStreak in Folge)');
   }
 
   /// Verbindet bei Bedarf neu und richtet die Charakteristiken ein.
@@ -277,34 +294,7 @@ class ProteusBle {
       DebugLog.add('Systembond loeschen fehlgeschlagen: $e');
       return false;
     }
-    _healTried = false;
-    return true;
-  }
-
-  /// Löscht einmal je Verbindungsanlauf den Android-Systembond (Selbstheilung
-  /// bei veralteter Kopplung). true = wurde ausgeführt, ein neuer Versuch
-  /// lohnt; false = nicht anwendbar (iOS, schon versucht, kein Bond).
-  Future<bool> _healBond(BluetoothDevice device) async {
-    if (!Platform.isAndroid || _healTried) {
-      return false;
-    }
-    try {
-      if (await device.bondState.first == BluetoothBondState.none) {
-        return false; // kein Bond vorhanden -> lag nicht an der Kopplung
-      }
-    } catch (_) {}
-    _healTried = true;
-    DebugLog.add('*** Selbstheilung: Systembond wird geloescht - '
-        'die naechste Verbindung fragt die PIN ab ***');
-    try {
-      await device.removeBond();
-    } catch (e) {
-      DebugLog.add('Systembond loeschen fehlgeschlagen: $e');
-      return false;
-    }
-    try {
-      await device.disconnect();
-    } catch (_) {}
+    staleBondStreak = 0;
     return true;
   }
 

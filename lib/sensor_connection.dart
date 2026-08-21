@@ -40,6 +40,13 @@ class SensorConnection extends ChangeNotifier {
   bool get retryDue =>
       _retryAfter == null || DateTime.now().isAfter(_retryAfter!);
 
+  /// Der Nutzer hat die Nachfrage nach der veralteten Kopplung für diese
+  /// App-Sitzung weggeklickt. Ein zweites Fenster waere Nerverei.
+  bool bondPromptSuppressed = false;
+
+  /// Genug Fehlversuche mit demselben Muster, um den Nutzer zu fragen.
+  bool get staleBondSuspect => ble.staleBondStreak >= 3;
+
   /// true, solange ein OS-autoConnect-Auftrag läuft. Das OS verbindet dann
   /// selbstständig – auch nach Abriss (schnelleres Wiederverbinden).
   bool autoPending = false;
