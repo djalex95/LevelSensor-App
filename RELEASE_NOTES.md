@@ -1,3 +1,28 @@
+## App 2.2.2
+
+Schneller verbunden, wenn ein Sensor aus der Liste gerade nicht da ist.
+
+- **Erst nachsehen, dann verbinden.** Bisher bekam beim App-Start jeder
+  bekannte Sensor sofort einen direkten Verbindungsversuch. Ein
+  ausgeschalteter belegte damit den Initiator des Bluetooth-Controllers bis
+  zum Zeitlimit – und da der immer nur eine Verbindung gleichzeitig
+  anbahnen kann, warteten die erreichbaren Sensoren mit. Jetzt geht ein
+  Suchlauf von drei Sekunden voraus; direkt verbunden wird nur, wer
+  tatsächlich in der Luft ist. Bei einem einzigen bekannten Sensor entfällt
+  der Suchlauf, dort hält ein Fehlversuch niemanden auf.
+- **Abwesende übernimmt das Betriebssystem.** Wer beim Suchlauf fehlt oder
+  einen Versuch verliert, wird an Androids autoConnect übergeben: das
+  wartet, ohne die Funkstrecke zu belegen, und verbindet von selbst, sobald
+  der Sensor wieder auftaucht.
+- **Kürzere Zeitlimits.** Der direkte Versuch wartet 6 statt 15 Sekunden,
+  der zweite Anlauf 10 statt 20. Ein Sensor, der da ist, verbindet in ein
+  bis drei Sekunden; alles darüber war reine Blockade.
+- **Kein sinnloser zweiter Anlauf.** Stand nie eine Funkverbindung, ist der
+  Sensor schlicht nicht da – da gibt es nichts zu reparieren.
+- **Wachsende Wartezeit.** Nach Fehlversuchen steigt die Pause von 8 über
+  16, 32 und 64 auf 120 Sekunden statt immer 8. Ein Erfolg setzt sie
+  zurück.
+
 ## App 2.2.1
 
 - **Die Nachfrage zur Kopplung springt nicht mehr auf Android-Macken an.**

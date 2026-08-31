@@ -169,10 +169,18 @@ class ProteusBle {
        * Sonst macht flutter_blue_plus das intern noch in connect(), und ein
        * Abbruch dabei lässt connect() werfen, bevor _setup überhaupt
        * läuft - dann greift auch der zweite Anlauf nicht. */
-      await device.connect(timeout: const Duration(seconds: 15), mtu: null);
+      /* 6 s statt 15: ein Sensor, der da ist und wirbt, verbindet in ein bis
+       * drei Sekunden. Alles darueber ist reine Blockade des Initiators. */
+      await device.connect(timeout: const Duration(seconds: 6), mtu: null);
       await _setup(device);
     } catch (e) {
       DebugLog.add('Verbindungsaufbau fehlgeschlagen: $e');
+      if (!_linkSeenThisAttempt) {
+        /* Es stand nie eine Funkverbindung: der Sensor ist nicht da. Ein
+         * zweiter Anlauf kann daran nichts reparieren und kostet nur
+         * weitere Sekunden am belegten Initiator. */
+        rethrow;
+      }
       if (!await _recover(device)) {
         await _noteFailedAttempt(device);
         rethrow;
@@ -231,7 +239,7 @@ class ProteusBle {
           return false; // das Betriebssystem verbindet selbst erneut
         }
         await device.connect(
-            timeout: const Duration(seconds: 20), mtu: null);
+            timeout: const Duration(seconds: 10), mtu: null);
       }
       await _setup(device);
       return true;

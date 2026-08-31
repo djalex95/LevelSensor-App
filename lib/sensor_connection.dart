@@ -40,6 +40,21 @@ class SensorConnection extends ChangeNotifier {
   bool get retryDue =>
       _retryAfter == null || DateTime.now().isAfter(_retryAfter!);
 
+  /// Fehlversuche in Folge. Die Pause bis zum naechsten Anlauf waechst
+  /// damit: ein Sensor, der aus ist, soll nicht alle acht Sekunden erneut
+  /// die Funkstrecke belegen.
+  int _failStreak = 0;
+  static const List<int> _backoffSec = [8, 16, 32, 64, 120];
+
+  /// Diesen Sensor dem Betriebssystem ueberlassen, auch wenn in dieser
+  /// Sitzung noch keine Verbindung stand: gesetzt fuer Sensoren, die beim
+  /// Suchlauf nicht in der Luft waren, und nach jedem Fehlversuch. Ein
+  /// direkter Versuch auf ein abwesendes Geraet belegt den Initiator des
+  /// Controllers bis zum Zeitlimit - und der kann immer nur EINE Verbindung
+  /// gleichzeitig anbahnen. Genau daran haengen dann die erreichbaren
+  /// Sensoren fest. Der OS-autoConnect wartet dagegen, ohne zu blockieren.
+  bool preferAuto = false;
+
   /// Der Nutzer hat die Nachfrage nach der veralteten Kopplung für diese
   /// App-Sitzung weggeklickt. Ein zweites Fenster waere Nerverei.
   bool bondPromptSuppressed = false;
@@ -58,11 +73,17 @@ class SensorConnection extends ChangeNotifier {
   bool _proven = false;
 
   /// autoConnect wartet ungewöhnlich lange -> Auftrag neu aufsetzen.
+  ///
+  /// Bei einem Sensor, der in dieser Sitzung schon einmal verbunden war,
+  /// ist eine Minute Warten verdaechtig. Bei einem, der noch nie da war,
+  /// ist es der Normalfall - der ist vermutlich schlicht ausgeschaltet, und
+  /// jedes Neuaufsetzen kostet wieder Funkzeit.
   bool get autoStale =>
       autoPending &&
       !connected &&
       _autoSince != null &&
-      DateTime.now().difference(_autoSince!) > const Duration(seconds: 60);
+      DateTime.now().difference(_autoSince!) >
+          (_proven ? const Duration(seconds: 60) : const Duration(minutes: 5));
 
   /// Während eines Firmware-Updates ruhen Auto-Reconnect und RSSI-Polling
   /// (der DFU-Transfer verwaltet die Verbindung selbst).
@@ -117,14 +138,20 @@ class SensorConnection extends ChangeNotifier {
     notifyListeners();
     try {
       final d = device ??= BluetoothDevice.fromId(id);
-      final auto = !manual && Platform.isAndroid && _proven;
+      final auto = !manual && Platform.isAndroid && (_proven || preferAuto);
       await ble.connect(d, autoConnect: auto);
       autoPending = auto;
       if (auto) _autoSince = DateTime.now();
       _retryAfter = null;
+      _failStreak = 0;
     } catch (e) {
       DebugLog.add('Sensor $id: Verbindungsversuch gescheitert: $e');
-      _retryAfter = DateTime.now().add(const Duration(seconds: 8));
+      final idx =
+          _failStreak < _backoffSec.length ? _failStreak : _backoffSec.length - 1;
+      _retryAfter = DateTime.now().add(Duration(seconds: _backoffSec[idx]));
+      _failStreak++;
+      /* Ab jetzt soll das Betriebssystem warten, nicht die App. */
+      if (Platform.isAndroid) preferAuto = true;
       rethrow;
     } finally {
       connecting = false;
@@ -253,6 +280,8 @@ class SensorConnection extends ChangeNotifier {
     connected = c;
     if (c) {
       _proven = true; // erste erfolgreiche Verbindung -> autoConnect jetzt nutzen
+      preferAuto = false;
+      _failStreak = 0;
       _autoSince = null;
       _startRssi();
       _queryBasics();
@@ -552,9 +581,7 @@ class SensorRegistry extends ChangeNotifier {
   /// App-Schließen advertised der Sensor beim nächsten Öffnen schon wieder,
   /// sodass der erste Versuch meist sofort greift.
   void start() {
-    for (final s in sensors) {
-      s.connect().catchError((_) {});
-    }
+    connectKnown();
     _reconnectTimer ??= Timer.periodic(const Duration(seconds: 5), (_) {
       if (_suspended) return; // App im Hintergrund -> Sensor bewusst freigeben
       if (dfuActive != null) return; // während OTA nichts anfassen
@@ -568,6 +595,66 @@ class SensorRegistry extends ChangeNotifier {
         }
       }
     });
+  }
+
+  /// Erst nachsehen, wer ueberhaupt da ist, dann verbinden.
+  ///
+  /// Ohne diesen Suchlauf bekommt JEDER bekannte Sensor einen direkten
+  /// Verbindungsversuch, und ein ausgeschalteter belegt damit den Initiator
+  /// des Bluetooth-Controllers bis zum Zeitlimit. Da der immer nur eine
+  /// Verbindung gleichzeitig anbahnen kann, warten die erreichbaren
+  /// Sensoren so lange mit. Ein Suchlauf von drei Sekunden ersetzt diese
+  /// unbestimmte Wartezeit durch eine feste und kurze.
+  Future<void> connectKnown() async {
+    if (sensors.isEmpty) return;
+    if (sensors.length == 1) {
+      /* Bei einem einzigen Sensor gibt es niemanden, den ein Fehlversuch
+       * aufhalten koennte - da waere der Suchlauf nur drei Sekunden
+       * Verzoegerung fuer nichts. */
+      final only = sensors.first;
+      if (!only.connected && !only.connecting && !only.dfuRunning) {
+        only.connect().catchError((_) {});
+      }
+      return;
+    }
+    final present = await _scanForKnown();
+    for (final s in sensors) {
+      if (s.connected || s.connecting || s.dfuRunning) continue;
+      /* Nicht gesehen heisst nicht "gibt es nicht": ein Sensor, der gerade
+       * mit einem anderen Handy verbunden ist, wirbt nicht. Auch der ist
+       * beim Betriebssystem besser aufgehoben als in einem direkten
+       * Versuch, der ins Zeitlimit laeuft. */
+      s.preferAuto = !present.contains(s.id);
+      s.connect().catchError((_) {});
+    }
+  }
+
+  /// Kurzer Suchlauf: welche der bekannten Sensoren sind gerade in der Luft?
+  Future<Set<String>> _scanForKnown(
+      {Duration dauer = const Duration(seconds: 3)}) async {
+    final seen = <String>{};
+    StreamSubscription<List<ScanResult>>? sub;
+    try {
+      sub = FlutterBluePlus.scanResults.listen((results) {
+        for (final r in results) {
+          seen.add(r.device.remoteId.str);
+        }
+      });
+      if (!FlutterBluePlus.isScanningNow) {
+        await FlutterBluePlus.startScan(timeout: dauer);
+      }
+      await Future<void>.delayed(dauer);
+    } catch (e) {
+      /* Bluetooth aus, Berechtigung fehlt: dann eben ohne Vorwissen -
+       * verbunden wird trotzdem, nur ohne die Abkuerzung. */
+      DebugLog.add('Suchlauf vor dem Verbinden nicht moeglich: $e');
+    } finally {
+      await sub?.cancel();
+      try {
+        await FlutterBluePlus.stopScan();
+      } catch (_) {}
+    }
+    return seen;
   }
 
   /// Alle Verbindungen aktiv trennen (beim Beenden der App).
@@ -595,9 +682,7 @@ class SensorRegistry extends ChangeNotifier {
   void resume() {
     if (!_suspended) return;
     _suspended = false;
-    for (final s in sensors) {
-      s.connect().catchError((_) {});
-    }
+    connectKnown();
     notifyListeners();
   }
 
