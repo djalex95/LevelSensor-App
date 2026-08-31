@@ -1,7 +1,7 @@
 name: fuellstand_app
 description: BLE-App für den NMEA2000-Füllstandsensor (Würth Proteus-e)
 publish_to: 'none'
-version: 2.2.1+32
+version: 2.2.2-dev+33
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
